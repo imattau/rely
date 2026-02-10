@@ -2,10 +2,11 @@ package auth
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/goccy/go-json"
 
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/pippellia-btc/smallset"
@@ -80,22 +81,22 @@ func TestValidateRequest(t *testing.T) {
 	}{
 		{
 			name:     "too much into the past",
-			request:  Request{CreatedAt: time.Now().Add(-2 * time.Minute), Challenge: "challenge", Relay: "example.com"},
+			request:  Request{ID: "id-1", Pubkey: "pubkey-1", CreatedAt: time.Now().Add(-2 * time.Minute), Challenge: "challenge", Relay: "example.com"},
 			expected: ErrInvalidTimestamp,
 		},
 		{
 			name:     "relay is different",
-			request:  Request{CreatedAt: time.Now(), Challenge: "challenge", Relay: "example.com.evil.website"},
+			request:  Request{ID: "id-2", Pubkey: "pubkey-2", CreatedAt: time.Now(), Challenge: "challenge", Relay: "example.com.evil.website"},
 			expected: ErrInvalidRelay,
 		},
 		{
 			name:     "challenge is different",
-			request:  Request{CreatedAt: time.Now(), Challenge: "different", Relay: "example.com"},
+			request:  Request{ID: "id-3", Pubkey: "pubkey-3", CreatedAt: time.Now(), Challenge: "different", Relay: "example.com"},
 			expected: ErrInvalidChallenge,
 		},
 		{
 			name:     "valid",
-			request:  Request{CreatedAt: time.Now(), Challenge: "challenge", Relay: "example.com"},
+			request:  Request{ID: "id-4", Pubkey: "pubkey-4", CreatedAt: time.Now(), Challenge: "challenge", Relay: "example.com"},
 			expected: nil,
 		},
 	}

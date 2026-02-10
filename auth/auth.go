@@ -89,49 +89,51 @@ func (s *State) Add(pk string) error {
 // Request is a normalized struct representing an authentication event (kind 22242)
 type Request struct {
 	ID        string
+	Pubkey    string
 	CreatedAt time.Time
 	Challenge string
 	Relay     string
 }
 
 // Parse the authentication event from the JSON decoder.
+// It performs event-specific validation, returning an error if invalid.
 func Parse(d *json.Decoder) (Request, error) {
 	e := new(nostr.Event)
 	if err := d.Decode(e); err != nil {
 		return Request{}, ErrInvalidFormat
 	}
 
+	r := Request{
+		ID:        e.ID,
+		Pubkey:    e.PubKey,
+		CreatedAt: e.CreatedAt.Time(),
+	}
+
 	if e.Kind != Kind {
-		return Request{}, ErrInvalidKind
+		return r, ErrInvalidKind
 	}
 
-	challenge := findTag(e.Tags, "challenge")
-	if challenge == "" {
-		return Request{}, ErrInvalidChallenge
+	r.Challenge = findTag(e.Tags, "challenge")
+	if r.Challenge == "" {
+		return r, ErrInvalidChallenge
 	}
 
-	relay := findTag(e.Tags, "relay")
-	if relay == "" {
-		return Request{}, ErrInvalidRelay
+	r.Relay = findTag(e.Tags, "relay")
+	if r.Relay == "" {
+		return r, ErrInvalidRelay
 	}
 
 	if !e.CheckID() {
-		return Request{}, ErrInvalidEventID
+		return r, ErrInvalidEventID
 	}
 	match, err := e.CheckSignature()
 	if err != nil || !match {
-		return Request{}, ErrInvalidEventSignature
+		return r, ErrInvalidEventSignature
 	}
-
-	return Request{
-		ID:        e.ID,
-		CreatedAt: e.CreatedAt.Time(),
-		Challenge: challenge,
-		Relay:     relay,
-	}, nil
+	return r, nil
 }
 
-// Validate returns the appropriate error if the auth is invalid, otherwise returns nil.
+// Validate returns the appropriate error if the auth Request does not match the expected state.
 func (s *State) Validate(e Request) error {
 	if time.Since(e.CreatedAt).Abs() > s.config.TimeTolerance {
 		return ErrInvalidTimestamp
