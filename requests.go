@@ -23,6 +23,7 @@ var (
 	ErrInvalidSubscriptionID = errors.New(`invalid subscription ID`)
 )
 
+// Request is the abstraction that represents a client request that must be sent to the relay for processing.
 type request interface {
 	// UID is the unique subscription identifier that combines the [Client.UID]
 	// with the user-provided request ID <Client.UID>:<request.ID>
@@ -59,8 +60,8 @@ func (r reqRequest) IsExpired() bool { return r.ctx.Err() != nil || r.client.isU
 
 type countRequest struct {
 	id      string
-	Filters nostr.Filters
 	client  *client
+	Filters nostr.Filters
 }
 
 func (c countRequest) UID() string     { return join(c.client.uid, c.id) }
@@ -69,28 +70,6 @@ func (c countRequest) IsExpired() bool { return c.client.isUnregistering.Load() 
 
 type closeRequest struct {
 	ID string
-}
-
-type authRequest struct {
-	*nostr.Event
-}
-
-func (a authRequest) Challenge() string {
-	for _, tag := range a.Tags {
-		if len(tag) > 1 && tag[0] == "challenge" {
-			return tag[1]
-		}
-	}
-	return ""
-}
-
-func (a authRequest) Relay() string {
-	for _, tag := range a.Tags {
-		if len(tag) > 1 && tag[0] == "relay" {
-			return tag[1]
-		}
-	}
-	return ""
 }
 
 type requestError struct {
@@ -138,15 +117,6 @@ func parseEvent(d *json.Decoder) (eventRequest, *requestError) {
 		return eventRequest{}, &requestError{Err: fmt.Errorf("%w: %w", ErrInvalidEventRequest, err)}
 	}
 	return event, nil
-}
-
-// parseAuth parses the json array into an [authRequest].
-func parseAuth(d *json.Decoder) (authRequest, *requestError) {
-	auth := authRequest{Event: new(nostr.Event)}
-	if err := d.Decode(auth.Event); err != nil {
-		return authRequest{}, &requestError{Err: fmt.Errorf("%w: %w", ErrInvalidAuthRequest, err)}
-	}
-	return auth, nil
 }
 
 func parseReq(d *json.Decoder) (reqRequest, *requestError) {

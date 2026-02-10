@@ -33,13 +33,13 @@ func NewConfig() Config {
 
 func (c Config) Validate() error {
 	if c.MaxPubkeys <= 0 {
-		return errors.New("max pubkeys must be non-negative")
+		return errors.New("max pubkeys must be positive")
 	}
 	if c.ChallengeBytes <= 0 {
-		return errors.New("challenge bytes must be non-negative. Suggested is 16 bytes")
+		return errors.New("challenge bytes must be positive. Suggested is 16 bytes")
 	}
 	if c.TimeTolerance <= 0 {
-		return errors.New("time tolerance must be non-negative. Suggested is 1 minute")
+		return errors.New("time tolerance must be positive. Suggested is 1 minute")
 	}
 	return nil
 }

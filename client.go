@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
+	"github.com/pippellia-btc/rely/auth"
 
 	ws "github.com/gorilla/websocket"
 )
@@ -85,7 +86,7 @@ type client struct {
 	mu   sync.Mutex
 	subs map[string]subscription
 
-	auth        authState
+	auth        *auth.State
 	ip          IP
 	uid         string
 	connectedAt time.Time
@@ -121,6 +122,12 @@ func (c *client) Disconnect() {
 		c.relay.unregister <- c
 		c.CloseAllSubs()
 	}
+}
+
+func (c *client) SendAuth() {
+	c.auth.Reset(func(challenge string) {
+		c.send(authResponse{Challenge: challenge})
+	})
 }
 
 // The client reads from the websocket and parses the data into the appropriate structure (e.g. [reqRequest]).
@@ -213,15 +220,14 @@ func (c *client) read() {
 			c.CloseSub(close.ID)
 
 		case "AUTH":
-			auth, err := parseAuth(decoder)
+			auth, err := auth.Parse(decoder)
 			if err != nil {
 				c.invalidMessages++
-				c.send(okResponse{ID: err.ID, Saved: false, Reason: err.Error()})
+				c.send(okResponse{ID: auth.ID, Saved: false, Reason: err.Error()})
 				continue
 			}
 
-			err = c.handleAuth(auth)
-			if err != nil {
+			if err := c.handleAuth(auth); err != nil {
 				c.send(okResponse{ID: err.ID, Saved: false, Reason: err.Error()})
 			}
 
@@ -348,7 +354,7 @@ func (c *client) handleCount(count countRequest) *requestError {
 	return c.relay.tryProcess(count)
 }
 
-func (c *client) handleAuth(request authRequest) *requestError {
+func (c *client) handleAuth(request auth.Request) *requestError {
 	if err := c.auth.Validate(request); err != nil {
 		// increase the invalid messages count to avoid attacking clients from spamming
 		// the relay with invalid auth requests, as they will eventually be disconnected.
@@ -356,7 +362,7 @@ func (c *client) handleAuth(request authRequest) *requestError {
 		return &requestError{ID: request.ID, Err: err}
 	}
 
-	if err := c.auth.Add(request.PubKey); err != nil {
+	if err := c.auth.Add(request.Pubkey); err != nil {
 		return &requestError{ID: request.ID, Err: err}
 	}
 

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
+	"github.com/pippellia-btc/rely/auth"
 
 	ws "github.com/gorilla/websocket"
 	"github.com/nbd-wtf/go-nostr/nip11"
@@ -18,7 +19,7 @@ type Option func(*Relay)
 // If this is unset, NIP-42 authentication will fail, and a warning will be logged.
 func WithDomain(d string) Option {
 	return func(r *Relay) {
-		r.settings.Sys.domain = normalizeURL(d)
+		r.settings.Auth.Domain = normalizeURL(d)
 	}
 }
 
@@ -71,13 +72,13 @@ func WithClientResponseLimit(n int) Option {
 
 // WithMaxClientPubkeys sets the maximum number of unique pubkeys with which a client can be authenticated at the same time.
 func WithMaxClientPubkeys(n int) Option {
-	return func(r *Relay) { r.settings.Sys.maxClientPubkeys = n }
+	return func(r *Relay) { r.settings.Auth.MaxPubkeys = n }
 }
 
 // WithoutMultiAuth limits to 1 the maximum number of unique pubkeys with which a client can be authenticated at the same time.
 // It's equivalent to WithMaxClientPubkeys(1).
 func WithoutMultiAuth() Option {
-	return func(r *Relay) { r.settings.Sys.maxClientPubkeys = 1 }
+	return func(r *Relay) { r.settings.Auth.MaxPubkeys = 1 }
 }
 
 // WithReadBufferSize sets the read buffer size (in bytes) for the underlying websocket connection upgrader.
@@ -135,6 +136,7 @@ func WithShutdownTimeout(d time.Duration) Option {
 // settings holds the configurable parameters for the Relay.
 type settings struct {
 	Sys  systemSettings
+	Auth auth.Config
 	HTTP httpSettings
 	WS   websocketSettings
 }
@@ -142,6 +144,7 @@ type settings struct {
 func newSettings() settings {
 	return settings{
 		Sys:  newSystemSettings(),
+		Auth: auth.NewConfig(),
 		HTTP: newHTTPSettings(),
 		WS:   newWebsocketSettings(),
 	}
@@ -160,23 +163,14 @@ type systemSettings struct {
 	// and sent to the client, enforcing per-client backpressure and preventing overproduction of responses.
 	responseLimit int
 
-	// the maximum number of unique authenticated pubkeys per client.
-	// To specify it, use [WithMaxClientPubkeys].
-	maxClientPubkeys int
-
-	// the relay domain name (e.g., "example.com") used to validate the NIP-42 "relay" tag.
-	// It should be explicitly set with [WithDomain]; if unset, a warning will be logged and NIP-42 will fail.
-	domain string
-
 	// the NIP-11 relay info document json. To specify it, use [WithInfo].
 	info []byte
 }
 
 func newSystemSettings() systemSettings {
 	return systemSettings{
-		responseLimit:    1000,
-		maxClientPubkeys: 64,
-		info:             newRelayInfo(),
+		responseLimit: 1000,
+		info:          newRelayInfo(),
 	}
 }
 
@@ -234,6 +228,19 @@ func newWebsocketSettings() websocketSettings {
 // validate panics if structural parameters are invalid, and logs warnings
 // for non-fatal but potentially misconfigured settings (e.g., missing domain).
 func (r *Relay) validate() {
+	// system
+	if r.settings.Sys.responseLimit < 1 {
+		panic("client response limit must be greater than 1 to allow responses to be sent")
+	}
+	if r.settings.Sys.info == nil {
+		r.log.Warn("NIP-11 information document is nil")
+	}
+
+	// auth (log since NIP-42 is not required)
+	if err := r.settings.Auth.Validate(); err != nil {
+		r.log.Warn("invalid auth settings: NIP-42 will not work", "error", err)
+	}
+
 	// http
 	if r.settings.HTTP.readHeaderTimeout < 1*time.Second {
 		panic("http read header timeout must be greater than 1s to function reliably")
@@ -265,16 +272,5 @@ func (r *Relay) validate() {
 	}
 	if cap(r.processor.queue) < 1 {
 		panic("processor queue must have a capacity greater than 1 to correctly handle client requests")
-	}
-
-	// system
-	if r.settings.Sys.responseLimit < 1 {
-		panic("client response limit must be greater than 1 to allow responses to be sent")
-	}
-	if r.settings.Sys.maxClientPubkeys < 1 {
-		panic("max authed pubkeys per client must be greater than 1 for NIP-42 to work")
-	}
-	if r.settings.Sys.domain == "" {
-		r.log.Warn("you must set the relay's domain to validate NIP-42 auth")
 	}
 }

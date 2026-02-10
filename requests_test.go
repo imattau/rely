@@ -2,13 +2,10 @@ package rely
 
 import (
 	"bytes"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"io"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/goccy/go-json"
 	"github.com/nbd-wtf/go-nostr"
@@ -273,129 +270,6 @@ func TestParseClose(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestParseAuth(t *testing.T) {
-	tests := []struct {
-		name     string
-		data     []byte
-		expected authRequest
-		err      *requestError
-	}{
-		{
-			name: "invalid event",
-			data: []byte(`["AUTH", "sdada"]`),
-			err:  &requestError{Err: ErrInvalidAuthRequest},
-		},
-		{
-			name:     "valid",
-			data:     []byte(`["AUTH", {"kind":22242,"id":"d7ae36c37cd2e2b2fde223036952b7df315be26dbeff6a3d659cf6fd1af904e0", "pubkey":"79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", "created_at":1744028944, "tags":[["challenge","whatever"]],"content":"","sig":"5bda0b8a1daf8b229daede2c875f650bb74c430e5d8ea109d616154a98f4d70913cd6d5b8befc7f472d05903cc717527678a976ce60d38bb2805e62a2d83d2f4"}]`),
-			expected: authRequest{Event: &nostr.Event{Kind: 22242, ID: "d7ae36c37cd2e2b2fde223036952b7df315be26dbeff6a3d659cf6fd1af904e0", PubKey: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", CreatedAt: 1744028944, Tags: nostr.Tags{{"challenge", "whatever"}}, Sig: "5bda0b8a1daf8b229daede2c875f650bb74c430e5d8ea109d616154a98f4d70913cd6d5b8befc7f472d05903cc717527678a976ce60d38bb2805e62a2d83d2f4"}},
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			r := bytes.NewReader(test.data)
-			d := json.NewDecoder(r)
-
-			_, err := parseLabel(d)
-			if err != nil {
-				t.Fatalf("expected error nil, got %v", err)
-			}
-
-			auth, err := parseAuth(d)
-			if !errors.Is(err, test.err) {
-				t.Fatalf("expected error %v, got %v", test.err, err)
-			}
-
-			if !reflect.DeepEqual(auth, test.expected) {
-				t.Fatalf("expected event request %v, got %v", test.expected, auth)
-			}
-		})
-	}
-}
-
-func TestValidateAuth(t *testing.T) {
-	tests := []struct {
-		name     string
-		auth     authRequest
-		expected error
-	}{
-		{
-			name:     "invalid kind",
-			auth:     authRequest{Event: &nostr.Event{Kind: 69, ID: "abc", CreatedAt: nostr.Now()}},
-			expected: ErrInvalidAuthKind,
-		},
-		{
-			name:     "too much into the past",
-			auth:     authRequest{Event: Signed(nostr.Event{Kind: 22242, CreatedAt: nostr.Now() - nostr.Timestamp(time.Minute+1)})},
-			expected: ErrInvalidTimestamp,
-		},
-		{
-			name:     "too much into the future",
-			auth:     authRequest{Event: Signed(nostr.Event{Kind: 22242, CreatedAt: nostr.Now() + nostr.Timestamp(time.Minute+1)})},
-			expected: ErrInvalidTimestamp,
-		},
-		{
-			name:     "no relay tag",
-			auth:     authRequest{Event: Signed(nostr.Event{Kind: 22242, CreatedAt: nostr.Now(), Tags: nostr.Tags{{"challenge", "challenge"}}})},
-			expected: ErrInvalidAuthRelay,
-		},
-		{
-			name:     "relay tag is different",
-			auth:     authRequest{Event: Signed(nostr.Event{Kind: 22242, CreatedAt: nostr.Now(), Tags: nostr.Tags{{"challenge", "challenge"}, {"relay", "example.com.evil.website"}}})},
-			expected: ErrInvalidAuthRelay,
-		},
-		{
-			name:     "invalid ID",
-			auth:     authRequest{Event: &nostr.Event{Kind: 22242, CreatedAt: nostr.Now(), Tags: nostr.Tags{{"challenge", "challenge"}, {"relay", "example.com"}}}},
-			expected: ErrInvalidEventID,
-		},
-		{
-			name:     "no challenge tag",
-			auth:     authRequest{Event: Signed(nostr.Event{Kind: 22242, CreatedAt: nostr.Now(), Tags: nostr.Tags{{"relay", "example.com"}}})},
-			expected: ErrInvalidAuthChallenge,
-		},
-		{
-			name:     "challenge tag is different",
-			auth:     authRequest{Event: Signed(nostr.Event{Kind: 22242, CreatedAt: nostr.Now(), Tags: nostr.Tags{{"relay", "example.com"}, {"challenge", "different"}}})},
-			expected: ErrInvalidAuthChallenge,
-		},
-		{
-			name:     "valid",
-			auth:     authRequest{Event: Signed(nostr.Event{Kind: 22242, CreatedAt: nostr.Now(), Tags: nostr.Tags{{"relay", "example.com"}, {"challenge", "challenge"}}})},
-			expected: nil,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			auth := &authState{
-				challenge: "challenge",
-				domain:    "example.com",
-			}
-
-			err := auth.Validate(test.auth)
-			if !errors.Is(err, test.expected) {
-				t.Fatalf("expected error %v, got %v", test.expected, err)
-			}
-		})
-	}
-}
-
-func BenchmarkCreateChallenge(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		challenge := make([]byte, 16)
-		rand.Read(challenge)
-		hex.EncodeToString(challenge)
-	}
-}
-
-func Signed(e nostr.Event) *nostr.Event {
-	sk := nostr.GeneratePrivateKey()
-	e.Sign(sk)
-	return &e
 }
 
 var (

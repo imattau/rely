@@ -50,7 +50,7 @@ func NewState(c Config) *State {
 // Any previously authenticated pubkey is cleared, and a new challenge is generated and sent to the callback function,
 // all while holding the lock.
 func (s *State) Reset(fn func(challenge string)) {
-	bytes := make([]byte, s.config.ChallengeBytes)
+	bytes := make([]byte, int(s.config.ChallengeBytes))
 	rand.Read(bytes)
 	challenge := hex.EncodeToString(bytes)
 

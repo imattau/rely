@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/nbd-wtf/go-nostr"
-	"github.com/pippellia-btc/smallset"
+	"github.com/pippellia-btc/rely/auth"
 )
 
 var (
@@ -302,12 +302,8 @@ func (r *Relay) ServeWS(w http.ResponseWriter, req *http.Request) {
 	}
 
 	client := &client{
-		subs: make(map[string]subscription, 10),
-		auth: authState{
-			pubkeys:    smallset.New[string](10),
-			maxPubkeys: r.settings.Sys.maxClientPubkeys,
-			domain:     r.settings.Sys.domain,
-		},
+		subs:        make(map[string]subscription, 10),
+		auth:        auth.NewState(r.settings.Auth),
 		uid:         r.assignID(),
 		ip:          GetIP(req),
 		connectedAt: time.Now(),
