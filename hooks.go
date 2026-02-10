@@ -3,6 +3,7 @@ package rely
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -140,6 +141,16 @@ func DefaultOnHooks() OnHooks {
 		Event:      logEvent,
 		Req:        logFilters,
 	}
+}
+
+func logEvent(c Client, e *nostr.Event) error {
+	slog.Info("received event ID", slog.String("id", e.ID), slog.String("ip", c.IP().Group()))
+	return nil
+}
+
+func logFilters(ctx context.Context, c Client, f nostr.Filters) ([]nostr.Event, error) {
+	slog.Info("received filters", slog.Int("count", len(f)), slog.String("ip", c.IP().Group()))
+	return nil, nil
 }
 
 // WhenHooks defines functions invoked when special, non-standard, or exceptional

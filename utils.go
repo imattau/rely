@@ -1,13 +1,8 @@
 package rely
 
 import (
-	"context"
-	"fmt"
-	"log"
-	"runtime"
 	"strings"
 
-	"github.com/gorilla/websocket"
 	"github.com/nbd-wtf/go-nostr"
 )
 
@@ -95,42 +90,4 @@ func ApplyBudget(budget int, filters ...nostr.Filter) {
 			}
 		}
 	}
-}
-
-// Print important stats of the relay while it's running.
-func (r *Relay) PrintStats() {
-	goroutines := runtime.NumGoroutine()
-	memStats := new(runtime.MemStats)
-	runtime.ReadMemStats(memStats)
-
-	fmt.Println("---------------- stats ----------------")
-	fmt.Printf("memory: %.2f MB\n", float64(memStats.Alloc)/(1024*1024))
-	fmt.Printf("goroutines: %d\n", goroutines)
-	fmt.Printf("active clients: %d\n", r.Clients())
-	fmt.Printf("active subscriptions: %d\n", r.Subscriptions())
-	fmt.Printf("active filters: %d\n", r.Filters())
-	fmt.Printf("register client channel: %d/%d\n", len(r.register), cap(r.register))
-	fmt.Printf("unregister client channel: %d/%d\n", len(r.unregister), cap(r.unregister))
-	fmt.Printf("processing queue: %d/%d\n", len(r.processor.queue), cap(r.processor.queue))
-	fmt.Printf("subscription updates channel: %d/%d\n", len(r.dispatcher.updates), cap(r.dispatcher.updates))
-	fmt.Printf("broadcast event channel: %d/%d\n", len(r.dispatcher.broadcast), cap(r.dispatcher.broadcast))
-	fmt.Println("---------------------------------------")
-}
-
-func isUnexpectedClose(err error) bool {
-	return websocket.IsUnexpectedCloseError(err,
-		websocket.CloseNormalClosure,
-		websocket.CloseGoingAway,
-		websocket.CloseNoStatusReceived,
-		websocket.CloseAbnormalClosure)
-}
-
-func logEvent(c Client, e *nostr.Event) error {
-	log.Printf("received eventID %s from IP %s", e.ID, c.IP())
-	return nil
-}
-
-func logFilters(ctx context.Context, c Client, f nostr.Filters) ([]nostr.Event, error) {
-	log.Printf("received %d filters from IP %s", len(f), c.IP())
-	return nil, nil
 }

@@ -394,7 +394,7 @@ func printStats(r *rely.Relay) {
 	fmt.Printf("processed nostr requests: %d\n", processed.Load())
 	fmt.Printf("abnormal closures: %d\n", abnormalClosures.Load())
 	fmt.Printf("total clients: %d\n", clients.Load())
-	r.PrintStats()
+	fmt.Println(r.StatsReport())
 }
 
 func clearScreen() {

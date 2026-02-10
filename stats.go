@@ -1,7 +1,10 @@
 package rely
 
 import (
+	"fmt"
+	"runtime"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -49,6 +52,28 @@ func (r *Relay) QueueLoad() float64 {
 }
 func (r *Relay) LastRegistrationFail() time.Time {
 	return time.Unix(r.stats.lastRegistrationFail.Load(), 0)
+}
+
+// StatsReport generates a string report of the relay's statistics at the current time.
+func (r *Relay) StatsReport() string {
+	goroutines := runtime.NumGoroutine()
+	memStats := new(runtime.MemStats)
+	runtime.ReadMemStats(memStats)
+
+	var b strings.Builder
+	fmt.Fprintln(&b, "---------------- stats ----------------")
+	fmt.Fprintf(&b, "memory: %.2f MB\n", float64(memStats.Alloc)/(1024*1024))
+	fmt.Fprintf(&b, "goroutines: %d\n", goroutines)
+	fmt.Fprintf(&b, "active clients: %d\n", r.Clients())
+	fmt.Fprintf(&b, "active subscriptions: %d\n", r.Subscriptions())
+	fmt.Fprintf(&b, "active filters: %d\n", r.Filters())
+	fmt.Fprintf(&b, "register client channel: %d/%d\n", len(r.register), cap(r.register))
+	fmt.Fprintf(&b, "unregister client channel: %d/%d\n", len(r.unregister), cap(r.unregister))
+	fmt.Fprintf(&b, "processing queue: %d/%d\n", len(r.processor.queue), cap(r.processor.queue))
+	fmt.Fprintf(&b, "subscription updates channel: %d/%d\n", len(r.dispatcher.updates), cap(r.dispatcher.updates))
+	fmt.Fprintf(&b, "broadcast event channel: %d/%d\n", len(r.dispatcher.broadcast), cap(r.dispatcher.broadcast))
+	fmt.Fprintln(&b, "---------------------------------------")
+	return b.String()
 }
 
 func (r *Relay) assignID() string { return strconv.FormatInt(r.stats.nextClient.Add(1), 10) }

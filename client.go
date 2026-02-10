@@ -407,3 +407,11 @@ func (c *client) writePing() error {
 		time.Now().Add(c.relay.settings.WS.writeWait),
 	)
 }
+
+func isUnexpectedClose(err error) bool {
+	return ws.IsUnexpectedCloseError(err,
+		ws.CloseNormalClosure,
+		ws.CloseGoingAway,
+		ws.CloseNoStatusReceived,
+		ws.CloseAbnormalClosure)
+}
