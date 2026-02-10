@@ -3,12 +3,13 @@ package auth
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/goccy/go-json"
 
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/pippellia-btc/smallset"
