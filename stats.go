@@ -54,6 +54,10 @@ func (r *Relay) LastRegistrationFail() time.Time {
 	return time.Unix(r.stats.lastRegistrationFail.Load(), 0)
 }
 
+func (r *Relay) assignID() string {
+	return strconv.FormatInt(r.stats.nextClient.Add(1), 10)
+}
+
 // StatsReport generates a string report of the relay's statistics at the current time.
 func (r *Relay) StatsReport() string {
 	goroutines := runtime.NumGoroutine()
@@ -75,5 +79,3 @@ func (r *Relay) StatsReport() string {
 	fmt.Fprintln(&b, "---------------------------------------")
 	return b.String()
 }
-
-func (r *Relay) assignID() string { return strconv.FormatInt(r.stats.nextClient.Add(1), 10) }

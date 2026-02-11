@@ -1,3 +1,8 @@
+// Package auth implements NIP-42 authentication for Nostr relays.
+//
+// This package provides authentication state management and validation for clients
+// connecting to a relay. It supports multi-pubkey authentication per client and
+// includes challenge generation, event validation, and relay URL canonicalization.
 package auth
 
 import (
