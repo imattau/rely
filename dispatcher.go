@@ -5,14 +5,15 @@ import (
 	"strings"
 
 	"github.com/nbd-wtf/go-nostr"
+	"github.com/pippellia-btc/rely/twindow"
 	"github.com/pippellia-btc/smallset"
 )
 
 // sID is the internal representation of a unique subscription identifier, which
-// is identical to [subscription.uid]. Used only to make the code more readable
+// is identical to [subscription.uid]. Used only to make the code more readable.
 type sID string
 
-// Join multiple strings into one, separated by ":". Useful to produce canonical UIDs.
+// join multiple strings into one, separated by ":". Useful to produce canonical UIDs.
 func join(strs ...string) string { return strings.Join(strs, ":") }
 
 // Dispatcher is responsible for indexing subscriptions, essential for efficient broadcasting of events.
@@ -26,7 +27,7 @@ type dispatcher struct {
 	byAuthor      map[string]*smallset.Ordered[sID]
 	byTag         map[string]*smallset.Ordered[sID]
 	byKind        map[int]*smallset.Ordered[sID]
-	byTime        *timeIndex
+	byTime        *twindow.Index[sID]
 
 	updates   chan update
 	broadcast chan *nostr.Event
@@ -61,14 +62,14 @@ func newDispatcher(relay *Relay) *dispatcher {
 		byAuthor:      make(map[string]*smallset.Ordered[sID], 3000),
 		byTag:         make(map[string]*smallset.Ordered[sID], 3000),
 		byKind:        make(map[int]*smallset.Ordered[sID], 3000),
-		byTime:        newTimeIndex(600),
+		byTime:        twindow.New[sID](600),
 		updates:       make(chan update, 256),
 		broadcast:     make(chan *nostr.Event, 256),
 		relay:         relay,
 	}
 }
 
-// Run syncronizes all access to the subscriptions map and the inverted indexes.
+// Run synchronizes all access to the subscriptions map and the inverted indexes.
 func (d *dispatcher) Run() {
 	defer d.relay.wg.Done()
 
@@ -220,7 +221,7 @@ func (d *dispatcher) Index(s subscription) {
 			}
 
 		default:
-			d.byTime.Add(f, sid)
+			d.byTime.Add(sid, f)
 		}
 	}
 }
@@ -296,7 +297,7 @@ func (d *dispatcher) Unindex(s subscription) {
 			}
 
 		default:
-			d.byTime.Remove(f, sid)
+			d.byTime.Remove(sid, f)
 		}
 	}
 }

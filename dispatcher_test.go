@@ -86,9 +86,9 @@ func TestIndexingSymmetry(t *testing.T) {
 		i.Unindex(sub)
 	}
 
-	if len(i.byID) > 0 || len(i.byAuthor) > 0 || len(i.byKind) > 0 || len(i.byTag) > 0 || i.byTime.size() > 0 {
+	if len(i.byID) > 0 || len(i.byAuthor) > 0 || len(i.byKind) > 0 || len(i.byTag) > 0 || i.byTime.Size() > 0 {
 		t.Errorf("expected all maps empty, got byID=%d byAuthor=%d byKind=%d byTag=%d byTime=%d",
-			len(i.byID), len(i.byAuthor), len(i.byKind), len(i.byTag), i.byTime.size())
+			len(i.byID), len(i.byAuthor), len(i.byKind), len(i.byTag), i.byTime.Size())
 	}
 }
 
