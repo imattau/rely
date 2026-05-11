@@ -58,7 +58,7 @@ func (p *processor) Process(r request) {
 	switch r := r.(type) {
 	case eventRequest:
 		res := p.relay.On.Event(r.client, r.Event)
-		r.client.send(okResponse{ID: r.Event.ID, Saved: !res.failed, Reason: res.reason})
+		r.client.send(okResponse{ID: r.Event.ID, Accepted: !res.failed, Reason: res.reason})
 
 		if !res.noBroadcast {
 			p.relay.Broadcast(r.Event)

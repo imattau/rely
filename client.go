@@ -174,13 +174,13 @@ func (c *client) read() {
 			event, err := parseEvent(decoder)
 			if err != nil {
 				c.invalidMessages++
-				c.send(okResponse{ID: err.ID, Saved: false, Reason: err.Error()})
+				c.send(okResponse{ID: err.ID, Accepted: false, Reason: err.Error()})
 				continue
 			}
 
 			err = c.handleEvent(event)
 			if err != nil {
-				c.send(okResponse{ID: err.ID, Saved: false, Reason: err.Error()})
+				c.send(okResponse{ID: err.ID, Accepted: false, Reason: err.Error()})
 			}
 
 		case "REQ":
@@ -223,12 +223,12 @@ func (c *client) read() {
 			auth, err := auth.Parse(decoder)
 			if err != nil {
 				c.invalidMessages++
-				c.send(okResponse{ID: auth.ID, Saved: false, Reason: err.Error()})
+				c.send(okResponse{ID: auth.ID, Accepted: false, Reason: err.Error()})
 				continue
 			}
 
 			if err := c.handleAuth(auth); err != nil {
-				c.send(okResponse{ID: err.ID, Saved: false, Reason: err.Error()})
+				c.send(okResponse{ID: err.ID, Accepted: false, Reason: err.Error()})
 			}
 
 		default:
@@ -366,7 +366,7 @@ func (c *client) handleAuth(request auth.Request) *requestError {
 		return &requestError{ID: request.ID, Err: err}
 	}
 
-	c.send(okResponse{ID: request.ID, Saved: true})
+	c.send(okResponse{ID: request.ID, Accepted: true})
 	c.relay.On.Auth(c)
 	return nil
 }

@@ -20,13 +20,13 @@ var (
 type response = json.Marshaler
 
 type okResponse struct {
-	ID     string
-	Saved  bool
-	Reason string
+	ID       string
+	Accepted bool
+	Reason   string
 }
 
 func (o okResponse) MarshalJSON() ([]byte, error) {
-	return json.Marshal([]any{"OK", o.ID, o.Saved, o.Reason})
+	return json.Marshal([]any{"OK", o.ID, o.Accepted, o.Reason})
 }
 
 type closedResponse struct {
