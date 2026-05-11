@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/nbd-wtf/go-nostr"
-	"github.com/pippellia-btc/rely/tests"
+	"github.com/pippellia-btc/rely/v2/tests"
 	"github.com/pippellia-btc/slicex"
 	"github.com/pippellia-btc/smallset"
 )

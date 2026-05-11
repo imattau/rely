@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-json"
-	"github.com/pippellia-btc/rely/auth"
+	"github.com/pippellia-btc/rely/v2/auth"
 
 	ws "github.com/gorilla/websocket"
 )

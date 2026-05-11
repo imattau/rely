@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/nbd-wtf/go-nostr"
-	"github.com/pippellia-btc/rely/twindow"
+	"github.com/pippellia-btc/rely/v2/twindow"
 	"github.com/pippellia-btc/smallset"
 )
 

@@ -20,7 +20,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/nbd-wtf/go-nostr"
-	"github.com/pippellia-btc/rely"
+	"github.com/pippellia-btc/rely/v2"
 )
 
 var (

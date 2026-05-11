@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/nbd-wtf/go-nostr"
-	"github.com/pippellia-btc/rely/auth"
+	"github.com/pippellia-btc/rely/v2/auth"
 )
 
 var (
