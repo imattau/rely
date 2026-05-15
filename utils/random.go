@@ -9,6 +9,7 @@ import (
 )
 
 // RandomEventBytes returns a random EVENT request in wire-format.
+// For usage convenience, it panics if the marshal fails (which should never happen).
 func RandomEventBytes() []byte {
 	event := []any{"EVENT", RandomEvent()}
 	data, err := json.Marshal(event)
@@ -19,6 +20,7 @@ func RandomEventBytes() []byte {
 }
 
 // RandomReqBytes returns a random REQ request in wire-format.
+// For usage convenience, it panics if the marshal fails (which should never happen).
 func RandomReqBytes() []byte {
 	req := []any{"REQ", RandomString()}
 	filters := rand.IntN(10)
@@ -34,6 +36,7 @@ func RandomReqBytes() []byte {
 }
 
 // RandomCountBytes returns a random COUNT request in wire-format.
+// For usage convenience, it panics if the marshal fails (which should never happen).
 func RandomCountBytes() []byte {
 	count := []any{"COUNT", RandomString()}
 	filters := rand.IntN(10)
