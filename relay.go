@@ -53,8 +53,8 @@ type Relay struct {
 func NewRelay(opts ...Option) *Relay {
 	r := &Relay{
 		clients:    make(map[*client]struct{}, 1000),
-		register:   make(chan *client, 256),
-		unregister: make(chan *client, 256),
+		register:   make(chan *client, 512),
+		unregister: make(chan *client, 512),
 		log:        slog.Default(),
 		Hooks:      DefaultHooks(),
 		settings:   newSettings(),

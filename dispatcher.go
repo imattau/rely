@@ -3,6 +3,7 @@ package rely
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/pippellia-btc/rely/v2/twindow"
@@ -57,14 +58,14 @@ type update struct {
 
 func newDispatcher(relay *Relay) *dispatcher {
 	return &dispatcher{
-		subscriptions: make(map[sID]subscription, 3000),
-		byID:          make(map[string]*smallset.Ordered[sID], 3000),
-		byAuthor:      make(map[string]*smallset.Ordered[sID], 3000),
-		byTag:         make(map[string]*smallset.Ordered[sID], 3000),
-		byKind:        make(map[int]*smallset.Ordered[sID], 3000),
-		byTime:        twindow.New[sID](600),
-		updates:       make(chan update, 256),
-		broadcast:     make(chan *nostr.Event, 256),
+		subscriptions: make(map[sID]subscription, 1024),
+		byID:          make(map[string]*smallset.Ordered[sID], 1024),
+		byAuthor:      make(map[string]*smallset.Ordered[sID], 1024),
+		byTag:         make(map[string]*smallset.Ordered[sID], 1024),
+		byKind:        make(map[int]*smallset.Ordered[sID], 1024),
+		byTime:        twindow.New[sID](10 * time.Minute),
+		updates:       make(chan update, 512),
+		broadcast:     make(chan *nostr.Event, 512),
 		relay:         relay,
 	}
 }

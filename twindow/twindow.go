@@ -33,9 +33,9 @@ type Index[ID cmp.Ordered] struct {
 }
 
 // New returns an Index using the dynamic time window [now - radius, now + radius].
-func New[ID cmp.Ordered](radius int64) *Index[ID] {
+func New[ID cmp.Ordered](radius time.Duration) *Index[ID] {
 	return &Index[ID]{
-		radius:  radius,
+		radius:  int64(radius.Seconds()),
 		current: smallset.NewCustom(sortByUntil[ID], 1024),
 		future:  smallset.NewCustom(sortBySince[ID], 1024),
 	}
