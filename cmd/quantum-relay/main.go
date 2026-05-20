@@ -102,6 +102,7 @@ func main() {
 	}
 
 	r := rely.NewRelay()
+	fetcher.relay = r
 
 	r.Reject.Event.Append(func(c rely.Client, event *nostr.Event) error {
 		if !spamDetector.AllowClient(c.UID()) {
@@ -263,6 +264,7 @@ type quantumFetcher struct {
 	store         *storage.Store
 	diffuser      *consensus.Diffuser
 	trust         TrustConfig
+	relay         *rely.Relay
 
 	mu       sync.Mutex
 	inFlight map[string]struct{}
@@ -316,6 +318,9 @@ func (f *quantumFetcher) Fetch(noteID, sourceRelay string) {
 		f.store.Save(*event)
 		if event.Kind == 1984 {
 			applyKind1984Report(f.diffuser, event, trustReportWeight(f.trust))
+		}
+		if f.relay != nil {
+			_ = f.relay.Broadcast(event)
 		}
 		log.Printf("quantum fetch complete note=%s source=%s kind=%d", noteID, sourceRelay, event.Kind)
 	}()
