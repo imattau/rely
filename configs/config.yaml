@@ -1,0 +1,18 @@
+relay:
+  listen: ":8080"
+  name: "Quantum Relay"
+  description: "Nostr relay with quantum walk propagation"
+
+quantum:
+  gamma: 0.5
+  fetch_threshold: 0.05
+  consensus_tick_ms: 500
+  quantum_tick_ms: 1000
+
+spam:
+  client_events_per_sec: 10
+  peer_announce_per_sec: 100
+
+peers:
+  - "ws://relay1.example.com:8081"
+  - "ws://relay2.example.com:8081"
