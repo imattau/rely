@@ -237,53 +237,59 @@ Or with a config file:
 ## Architecture
 
 ```mermaid
-flowchart TD
-    WS1([WS]) <--> C1[Client]
-    WS2([WS]) <--> C2[Client]
-    WS3([WS]) <--> C3[Client]
-
-    C1 & C2 & C3 -->|request| P
-
-    subgraph rely ["rely v2 core"]
-        P[Processor] -->|event| D[Dispatcher]
-        D -->|event| C1 & C2 & C3
-    end
-
-    subgraph hooks ["quantum addon hooks"]
+flowchart LR
+    subgraph clients ["Nostr Clients"]
         direction TB
-        RJ["Reject.Event\n─────────────\nrate limiter\nreputation gate\n(rep < −0.5)"]
-        OE["On.Event\n─────────────\nstore.Save\nprop.AddNote\npeerMgr.Broadcast\nnote_announce"]
+        C1[Client] <--> WS1([WS])
+        C2[Client] <--> WS2([WS])
+        C3[Client] <--> WS3([WS])
     end
 
+    subgraph core ["rely v2 core"]
+        direction TB
+        P[Processor]
+        D[Dispatcher]
+        P -->|accepted event| D
+    end
+
+    subgraph addon ["quantum addon"]
+        direction TB
+        subgraph hooks ["hooks"]
+            RJ["Reject.Event\nrate limit · rep gate"]
+            OE["On.Event\nstore · propagator · announce"]
+        end
+        subgraph qlayer ["quantum layer"]
+            PROP["Propagator\nwalk amplitude · fetch threshold"]
+            GRAPH["GraphState\nLaplacian · eigensolver"]
+            STORE["Store\nevents + reputation"]
+            DIFF["Diffuser\nround counter · delta gossip"]
+            RL["RateLimiter\ntoken buckets"]
+        end
+        PROP --> GRAPH
+        OE --> PROP
+        OE --> STORE
+        RJ --> RL
+        RJ --> DIFF
+    end
+
+    subgraph mesh ["peer mesh"]
+        PM["PeerManager\nenvelope · ping · trust"]
+    end
+
+    PEER([Peer Relay])
+
+    clients -->|EVENT / REQ| P
     P -->|Reject.Event| RJ
     P -->|On.Event| OE
-
-    subgraph quantum ["quantum layer"]
-        direction TB
-        PROP["Propagator\n(walk.go)\nper-note amplitude\nfetch threshold"]
-        GRAPH["GraphState\n(graph.go)\nLaplacian · Jacobi\nTaylor fallback"]
-        DIFF["Diffuser\n(diffuser.go)\nround counter\ndelta gossip"]
-        SPAM["RateLimiter\n(detector.go)\ntoken buckets"]
-        STORE["Store\n(store.go)\nevents + reputation"]
-    end
-
-    OE --> PROP
-    OE --> STORE
-    PROP --> GRAPH
-    RJ --> SPAM
-    RJ --> DIFF
-
-    PROP -->|"prob > threshold\nfetch via WS REQ"| PEER_RELAY([Peer Relay])
-    PEER_RELAY -->|"fetched event\nstore.Save\nr.Broadcast"| D
-
-    subgraph p2p ["peer mesh"]
-        PM["PeerManager\n(peer.go)\nenvelope · ping\nbuffered send"]
-    end
+    D -->|matching events| clients
 
     OE --> PM
-    PM <-->|"note_announce\nconsensus\nblock_peer"| PEER_RELAY
-    PEER_RELAY -->|consensus state| DIFF
-    DIFF -->|weighted merge| DIFF
+    PM <-->|"note_announce\nconsensus\nblock_peer"| PEER
+
+    PROP -->|"prob > threshold\nREQ fetch"| PEER
+    PEER -->|fetched event| D
+
+    PEER -->|consensus state| DIFF
 ```
 
 ### File tree
