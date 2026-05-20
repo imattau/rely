@@ -236,6 +236,57 @@ Or with a config file:
 
 ## Architecture
 
+```mermaid
+flowchart TD
+    WS1([WS]) <--> C1[Client]
+    WS2([WS]) <--> C2[Client]
+    WS3([WS]) <--> C3[Client]
+
+    C1 & C2 & C3 -->|request| P
+
+    subgraph rely ["rely v2 core"]
+        P[Processor] -->|event| D[Dispatcher]
+        D -->|event| C1 & C2 & C3
+    end
+
+    subgraph hooks ["quantum addon hooks"]
+        direction TB
+        RJ["Reject.Event\n─────────────\nrate limiter\nreputation gate\n(rep < −0.5)"]
+        OE["On.Event\n─────────────\nstore.Save\nprop.AddNote\npeerMgr.Broadcast\nnote_announce"]
+    end
+
+    P -->|Reject.Event| RJ
+    P -->|On.Event| OE
+
+    subgraph quantum ["quantum layer"]
+        direction TB
+        PROP["Propagator\n(walk.go)\nper-note amplitude\nfetch threshold"]
+        GRAPH["GraphState\n(graph.go)\nLaplacian · Jacobi\nTaylor fallback"]
+        DIFF["Diffuser\n(diffuser.go)\nround counter\ndelta gossip"]
+        SPAM["RateLimiter\n(detector.go)\ntoken buckets"]
+        STORE["Store\n(store.go)\nevents + reputation"]
+    end
+
+    OE --> PROP
+    OE --> STORE
+    PROP --> GRAPH
+    RJ --> SPAM
+    RJ --> DIFF
+
+    PROP -->|"prob > threshold\nfetch via WS REQ"| PEER_RELAY([Peer Relay])
+
+    subgraph p2p ["peer mesh"]
+        PM["PeerManager\n(peer.go)\nenvelope · ping\nbuffered send"]
+    end
+
+    OE --> PM
+    PM <-->|"note_announce\nconsensus\nblock_peer"| PEER_RELAY
+    PEER_RELAY -->|consensus state| DIFF
+    DIFF -->|weighted merge| DIFF
+```
+
+### File tree
+
 ```
 cmd/quantum-relay/
   main.go          — wiring: relay hooks, peer message dispatch, tick loops
