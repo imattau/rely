@@ -11,6 +11,7 @@ A production-ready Nostr relay built on [rely v2](../../README.md) that uses **c
 | **Quantum walk propagation** | Propagation probability from relay *s* to relay *i* is computed as \|⟨i\|exp(−iLt)\|s⟩\|², where *L* is the graph Laplacian of the relay mesh |
 | **Reputation damping** | Negative-reputation pubkeys have their propagation amplitude damped by `exp(−2γ\|rep\|t)`, making spam harder to propagate network-wide |
 | **Diffusive consensus** | Peers converge on a shared round counter and reputation map through neighbour-averaging gossip with clamped `[−1, 1]` scores |
+| **Trusted peers** | Operator-configured peer weights influence consensus merges, trusted peer broadcasts, block propagation, and reputation deltas |
 | **P2P peer mesh** | Typed WebSocket envelope protocol (`type`/`payload`) with 30-second keepalive pings and buffered per-peer send queues |
 | **Token-bucket rate limiting** | Independent per-client and per-peer token buckets; no external dependencies |
 | **In-memory storage** | Thread-safe event store with filter matching and per-pubkey reputation |
@@ -46,6 +47,8 @@ prob = |amp|²  × ReputationFactor(rep, γ, t)
 
 If `prob > fetch_threshold`, the note is fetched from its source relay. A small **exploration floor** (`0.02 × (1 − exp(−t/25))`) prevents notes from getting permanently stuck at zero probability in weakly-connected graphs.
 
+The fetch itself is a real websocket round-trip: the relay opens a connection back to the source relay, sends a Nostr `REQ` for the specific note ID, waits for `EVENT`/`EOSE`, and stores the returned note locally. That means the quantum layer now reduces actual relay-to-relay traffic, not just internal bookkeeping.
+
 ### 3. Reputation damping
 
 ```go
@@ -72,11 +75,62 @@ rep[k] = clamp((local[k] + neighbour[k]) / 2, -1, 1)
 
 This is a standard gossip diffusion protocol — values converge globally over O(diameter) rounds.
 
-### 5. Spam protection
+### 5. Trusted peers
+
+Trusted peers are configured locally. Each peer URL can be assigned a weight multiplier and an enabled flag in `trust:`. That weight is used for:
+
+- weighted consensus merges
+- trusted peer broadcasts
+- trusted `block_peer` propagation
+- kind-1984 reputation deltas
+
+This keeps trust operator-controlled and local to each relay. There is no global trust registry.
+
+### 6. Spam protection
 
 Two layers:
 - **Token-bucket rate limiting** — per client-UID and per peer URL, configured events/sec
 - **Reputation gate** — events from pubkeys with reputation < −0.5 are rejected at the rely `Reject.Event` hook before any processing
+- **Kind-1984 reports** — trusted spam reports reduce reputation through the same local reputation map, so later ingest decisions see the updated score immediately
+
+---
+
+## Network Benefits
+
+### Note reach beyond the author's relay list
+
+In standard Nostr, a note's reach is bounded by the author's relay list. If an author never published to relay X, their note never reaches relay X regardless of how many of relay X's subscribers would want it.
+
+With quantum propagation, the author publishes to one or a few relays. Those relays announce the note to their peers via `note_announce`. Each peer evaluates walk probability and fetches if the threshold is met, then announces further. The note propagates through relays the author has never configured or interacted with:
+
+```
+Author → Relay A → Relay B → Relay C → Relay D
+                                          ↑
+                              author never knew this existed,
+                              but a subscriber is here
+```
+
+This solves the relay fragmentation problem at the protocol level rather than pushing it onto clients.
+
+### Reputation travels ahead of content
+
+Reputation converges across the mesh via diffusive consensus — relays share and average reputation scores every consensus tick. A well-regarded pubkey's positive reputation reaches relays before their notes do, meaning those relays are already primed to fetch their content when a `note_announce` arrives.
+
+### Bandwidth reduction
+
+| Layer | Current Nostr | With quantum propagation |
+|---|---|---|
+| Client upload | Publish to 10–20 relays simultaneously | Publish to 1–3; mesh carries the rest |
+| Relay inbound | Receives every client publish blast | Receives targeted fetches only |
+| Relay outbound | Re-pushes to all peers | Serves local subscribers only |
+| Spam | Hits every relay the client publishes to | Never propagates past originating relay |
+| Subscriber delivery | Same event once per connected relay | Once from local relay |
+
+Propagation cost is proportional to demand — notes nobody fetches cost only a single lightweight `note_announce` gossip message. Notes that cross the fetch threshold are fetched once per relay, with in-flight deduplication preventing concurrent duplicate fetches for the same note ID.
+
+### Spam containment
+
+Spam notes from low-reputation pubkeys have their walk probability exponentially damped by `exp(−2γ|rep|t)`. They are never fetched by peer relays, so spam cost is contained to the originating relay and does not consume mesh bandwidth or storage. As reputation diffuses across the mesh, the same pubkey is suppressed network-wide within O(diameter) consensus rounds — without any central blocklist.
 
 ---
 
@@ -126,6 +180,12 @@ spam:
 peers:
   - "ws://relay2.example.com"
   - "ws://relay3.example.com"
+
+trust:
+  enabled: false             # enable local trusted-peer behaviour
+  weight: 2.0                # trust multiplier for listed peers
+  peers:
+    - "ws://relay2.example.com"
 ```
 
 Place the file at `configs/config.yaml` relative to the binary. If the file is missing, all defaults above apply.
@@ -138,6 +198,9 @@ Place the file at `configs/config.yaml` relative to the binary. If the file is m
 | `fetch_threshold` | Lower = fetch more aggressively. 0 fetches everything. |
 | `consensus_tick_ms` | Faster = quicker reputation convergence; more network traffic. |
 | `quantum_tick_ms` | Faster = notes fetched sooner; higher CPU. |
+| `trust.enabled` | Enables trusted-peer weighting and trusted block propagation. |
+| `trust.weight` | Multiplier applied to listed trusted peers. |
+| `trust.peers` | List of peer URLs that should receive the trust weight. |
 
 ---
 
@@ -200,4 +263,8 @@ go test ./tests/ -v -run TestQuantumSwarm
 
 # Spam stress test
 go test ./tests/ -v -run TestSpamStress
+
+# Trusted-peer integration tests
+go test ./cmd/quantum-relay/ -v -run TestTrustedMesh
+go test ./cmd/quantum-relay/ -v -run TestFetchEventFromRelay
 ```
