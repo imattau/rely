@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/nbd-wtf/go-nostr"
@@ -160,4 +161,138 @@ func TestFetchEventFromRelay(t *testing.T) {
 	if fetched.Content != event.Content {
 		t.Fatalf("fetched content = %q, want %q", fetched.Content, event.Content)
 	}
+}
+
+// TestQuantumFetchBroadcastToSubscriber verifies the full propagation path:
+// quantumFetcher.Fetch → fetchEventFromRelay → store.Save → r.Broadcast →
+// Dispatcher → subscribed client receives EVENT.
+func TestQuantumFetchBroadcastToSubscriber(t *testing.T) {
+	// --- source relay: holds the note to be fetched ---
+	srcStore := storage.NewStore()
+	srcRelay := rely.NewRelay()
+	srcRelay.Reject.Connection.Clear()
+	srcRelay.Reject.Event.Clear()
+	srcRelay.On.Event = func(c rely.Client, event *nostr.Event) rely.EventResult {
+		srcStore.Save(*event)
+		return rely.Success()
+	}
+	srcRelay.On.Req = func(ctx context.Context, c rely.Client, id string, filters nostr.Filters) ([]nostr.Event, error) {
+		return srcStore.Query(filters), nil
+	}
+
+	srcLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen source relay: %v", err)
+	}
+	defer srcLn.Close()
+
+	srcCtx, srcCancel := context.WithCancel(context.Background())
+	defer srcCancel()
+	go srcRelay.Start(srcCtx)
+	go func() { _ = (&http.Server{Handler: srcRelay}).Serve(srcLn) }()
+
+	// publish a note to the source relay
+	event := nostr.Event{
+		CreatedAt: nostr.Now(),
+		Kind:      1,
+		PubKey:    "broadcast-test-pubkey",
+		Content:   "propagated note",
+	}
+	if err := event.Sign(nostr.GeneratePrivateKey()); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	srcURL := "ws://" + srcLn.Addr().String()
+	publishToRelay(t, srcURL, event)
+
+	// --- local relay: where the subscriber connects ---
+	localStore := storage.NewStore()
+	localRelay := rely.NewRelay()
+	localRelay.Reject.Connection.Clear()
+	localRelay.Reject.Event.Clear()
+	localRelay.On.Event = func(c rely.Client, e *nostr.Event) rely.EventResult {
+		localStore.Save(*e)
+		return rely.Success()
+	}
+	localRelay.On.Req = func(ctx context.Context, c rely.Client, id string, filters nostr.Filters) ([]nostr.Event, error) {
+		return localStore.Query(filters), nil
+	}
+
+	localLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen local relay: %v", err)
+	}
+	defer localLn.Close()
+
+	localCtx, localCancel := context.WithCancel(context.Background())
+	defer localCancel()
+	go localRelay.Start(localCtx)
+	go func() { _ = (&http.Server{Handler: localRelay}).Serve(localLn) }()
+
+	// give relays a moment to start
+	time.Sleep(20 * time.Millisecond)
+
+	// --- subscriber: connects to local relay with a matching REQ ---
+	subConn, _, err := websocket.DefaultDialer.Dial("ws://"+localLn.Addr().String(), nil)
+	if err != nil {
+		t.Fatalf("dial local relay: %v", err)
+	}
+	defer subConn.Close()
+
+	req, _ := json.Marshal([]any{"REQ", "sub1", nostr.Filter{Kinds: []int{1}}})
+	if err := subConn.WriteMessage(websocket.TextMessage, req); err != nil {
+		t.Fatalf("write REQ: %v", err)
+	}
+
+	// --- fetcher: wired to local relay ---
+	fetcher := newQuantumFetcher("ws://"+localLn.Addr().String(), localStore, consensus.NewDiffuser(nil, nil), TrustConfig{})
+	fetcher.relay = localRelay
+
+	// trigger fetch from source relay
+	fetcher.Fetch(event.ID, srcURL)
+
+	// --- subscriber should receive the EVENT within 2 seconds ---
+	subConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	received := false
+	for !received {
+		_, msg, err := subConn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read from subscriber: %v — propagated note never delivered", err)
+		}
+		var parts []json.RawMessage
+		if err := json.Unmarshal(msg, &parts); err != nil || len(parts) < 3 {
+			continue
+		}
+		var label string
+		if err := json.Unmarshal(parts[0], &label); err != nil || label != "EVENT" {
+			continue
+		}
+		var got nostr.Event
+		if err := json.Unmarshal(parts[2], &got); err != nil {
+			continue
+		}
+		if got.ID == event.ID {
+			received = true
+		}
+	}
+
+	if !received {
+		t.Error("subscriber did not receive propagated note")
+	}
+}
+
+func publishToRelay(t *testing.T, url string, event nostr.Event) {
+	t.Helper()
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("dial %s: %v", url, err)
+	}
+	defer conn.Close()
+
+	payload, _ := json.Marshal([]any{"EVENT", event})
+	if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+		t.Fatalf("write EVENT: %v", err)
+	}
+	// drain OK response
+	conn.SetReadDeadline(time.Now().Add(time.Second))
+	conn.ReadMessage()
 }
