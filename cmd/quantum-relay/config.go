@@ -13,6 +13,7 @@ type Config struct {
 	Quantum QuantumConfig `yaml:"quantum"`
 	Spam    SpamConfig    `yaml:"spam"`
 	Peers   []string      `yaml:"peers"`
+	Trust   TrustConfig   `yaml:"trust"`
 }
 
 type RelayConfig struct {
@@ -41,6 +42,12 @@ type SpamConfig struct {
 	PeerAnnouncePerSec int `yaml:"peer_announce_per_sec"`
 }
 
+type TrustConfig struct {
+	Enabled bool     `yaml:"enabled"`
+	Weight  float64  `yaml:"weight"`
+	Peers   []string `yaml:"peers"`
+}
+
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -57,6 +64,7 @@ func LoadConfig(path string) (*Config, error) {
 func parseConfig(content string, cfg *Config) error {
 	section := ""
 	inPeers := false
+	inTrustPeers := false
 
 	lines := strings.Split(content, "\n")
 	for _, raw := range lines {
@@ -65,9 +73,15 @@ func parseConfig(content string, cfg *Config) error {
 			continue
 		}
 
+		if section == "trust" && line == "peers:" {
+			inTrustPeers = true
+			continue
+		}
+
 		if strings.HasSuffix(line, ":") && !strings.Contains(line, " ") {
 			section = strings.TrimSuffix(line, ":")
 			inPeers = section == "peers"
+			inTrustPeers = false
 			continue
 		}
 
@@ -77,6 +91,18 @@ func parseConfig(content string, cfg *Config) error {
 				cfg.Peers = append(cfg.Peers, trimQuotes(item))
 			}
 			continue
+		}
+
+		if section == "trust" {
+			switch {
+			case strings.HasPrefix(line, "peers:"):
+				inTrustPeers = true
+				continue
+			case inTrustPeers && strings.HasPrefix(line, "-"):
+				item := strings.TrimSpace(strings.TrimPrefix(line, "-"))
+				cfg.Trust.Peers = append(cfg.Trust.Peers, trimQuotes(item))
+				continue
+			}
 		}
 
 		key, value, ok := strings.Cut(line, ":")
@@ -137,6 +163,17 @@ func parseConfig(content string, cfg *Config) error {
 					return fmt.Errorf("invalid spam.peer_announce_per_sec: %w", err)
 				}
 				cfg.Spam.PeerAnnouncePerSec = v
+			}
+		case "trust":
+			switch key {
+			case "enabled":
+				cfg.Trust.Enabled = value == "true"
+			case "weight":
+				v, err := strconv.ParseFloat(value, 64)
+				if err != nil {
+					return fmt.Errorf("invalid trust.weight: %w", err)
+				}
+				cfg.Trust.Weight = v
 			}
 		}
 	}

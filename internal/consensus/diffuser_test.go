@@ -1,7 +1,9 @@
 package consensus_test
 
 import (
+	"math"
 	"testing"
+	"time"
 
 	"github.com/pippellia-btc/rely/v2/internal/consensus"
 )
@@ -46,5 +48,43 @@ func TestSnapshotReturnsDeltaOnly(t *testing.T) {
 	second := d.Snapshot()
 	if len(second.Rep) != 1 {
 		t.Fatalf("snapshot should remain stable until a broadcast clears dirty state, got %d", len(second.Rep))
+	}
+}
+
+func TestMergeStateWeighted(t *testing.T) {
+	d := consensus.NewDiffuser(nil, nil)
+	d.SetReputation("alice", 0.0)
+
+	neighbour := &consensus.State{
+		Round: 10,
+		Rep:   map[string]float64{"alice": 1.0},
+	}
+	d.MergeState(neighbour, 2.0)
+
+	got := d.GetReputation("alice")
+	expected := 2.0 / 3.0
+	if math.Abs(got-expected) > 1e-9 {
+		t.Fatalf("expected %v, got %v", expected, got)
+	}
+}
+
+func TestEnqueueWeighted(t *testing.T) {
+	d := consensus.NewDiffuser(nil, nil)
+	d.SetReputation("bob", 0.0)
+
+	done := make(chan struct{})
+	go d.Run(10*time.Millisecond, done)
+
+	d.Enqueue(&consensus.State{
+		Rep: map[string]float64{"bob": 0.9},
+	}, 3.0)
+
+	time.Sleep(50 * time.Millisecond)
+	close(done)
+
+	got := d.GetReputation("bob")
+	expected := 0.675
+	if math.Abs(got-expected) > 1e-9 {
+		t.Fatalf("expected %v, got %v", expected, got)
 	}
 }

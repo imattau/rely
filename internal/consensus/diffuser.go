@@ -11,6 +11,11 @@ type State struct {
 	Rep   map[string]float64 `json:"rep"`
 }
 
+type incomingMsg struct {
+	state  *State
+	weight float64
+}
+
 type Diffuser struct {
 	mu          sync.RWMutex
 	round       int64
@@ -18,7 +23,7 @@ type Diffuser struct {
 	dirty       map[string]float64
 	broadcast   func(msgType string, payload interface{})
 	onRecompute func()
-	incoming    chan *State
+	incoming    chan incomingMsg
 }
 
 func NewDiffuser(broadcast func(string, interface{}), onRecompute func()) *Diffuser {
@@ -27,7 +32,7 @@ func NewDiffuser(broadcast func(string, interface{}), onRecompute func()) *Diffu
 		dirty:       make(map[string]float64),
 		broadcast:   broadcast,
 		onRecompute: onRecompute,
-		incoming:    make(chan *State, 64),
+		incoming:    make(chan incomingMsg, 64),
 	}
 }
 
@@ -52,26 +57,39 @@ func (d *Diffuser) Run(tick time.Duration, done <-chan struct{}) {
 			if d.broadcast != nil {
 				d.broadcast("consensus", snapshot)
 			}
-		case s := <-d.incoming:
-			d.MergeState(s)
+		case msg := <-d.incoming:
+			d.MergeState(msg.state, msg.weight)
 		}
 	}
 }
 
-func (d *Diffuser) Enqueue(s *State) {
+func (d *Diffuser) Enqueue(s *State, weight ...float64) {
 	if s == nil {
 		return
 	}
 
+	w := 1.0
+	if len(weight) > 0 {
+		w = weight[0]
+	}
+
 	select {
-	case d.incoming <- s:
+	case d.incoming <- incomingMsg{state: s, weight: w}:
 	default:
 	}
 }
 
-func (d *Diffuser) MergeState(neighbour *State) {
+func (d *Diffuser) MergeState(neighbour *State, weight ...float64) {
 	if neighbour == nil {
 		return
+	}
+
+	w := 1.0
+	if len(weight) > 0 {
+		w = weight[0]
+	}
+	if w < 0 {
+		w = 0
 	}
 
 	d.mu.Lock()
@@ -84,12 +102,12 @@ func (d *Diffuser) MergeState(neighbour *State) {
 		d.dirty = make(map[string]float64)
 	}
 
-	avg := float64(d.round+neighbour.Round) / 2.0
+	avg := (float64(d.round) + float64(neighbour.Round)*w) / (1.0 + w)
 	d.round = int64(math.Round(avg))
 
 	for k, v := range neighbour.Rep {
 		local := d.rep[k]
-		merged := (local + v) / 2.0
+		merged := (local + v*w) / (1.0 + w)
 		clamped := clamp(merged, -1, 1)
 		if clamped != local {
 			d.rep[k] = clamped

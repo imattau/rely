@@ -16,3 +16,9 @@ spam:
 peers:
   - "ws://relay1.example.com:8081"
   - "ws://relay2.example.com:8081"
+
+trust:
+  enabled: false
+  weight: 2.0
+  peers:
+    - "ws://relay1.example.com:8081"

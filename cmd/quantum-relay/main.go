@@ -7,8 +7,11 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
+	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/nbd-wtf/go-nostr"
 	rely "github.com/pippellia-btc/rely/v2"
 	"github.com/pippellia-btc/rely/v2/internal/consensus"
@@ -42,6 +45,10 @@ func defaultConfig() *Config {
 			ClientEventsPerSec: 10,
 			PeerAnnouncePerSec: 100,
 		},
+		Trust: TrustConfig{
+			Enabled: false,
+			Weight:  2.0,
+		},
 	}
 }
 
@@ -65,6 +72,7 @@ func main() {
 	graph.Recompute()
 
 	var peerMgr *p2p.PeerManager
+	var prop *quantum.Propagator
 	diffuser := consensus.NewDiffuser(func(msgType string, payload interface{}) {
 		if peerMgr != nil {
 			peerMgr.Broadcast(msgType, payload)
@@ -73,34 +81,19 @@ func main() {
 		graph.ScheduleRecompute(250 * time.Millisecond)
 	})
 
-	prop := quantum.NewPropagator(graph, graph.GetRelayIndex(relayURL), cfg.Quantum.FetchThreshold, func(noteID, sourceRelay string) {
-		log.Printf("quantum fetch triggered note=%s from=%s", noteID, sourceRelay)
-	})
-
 	peerMgr = p2p.NewPeerManager(func(peerURL, msgType string, payload json.RawMessage) {
 		if !spamDetector.AllowPeer(peerURL) {
 			log.Printf("peer rate limited peer=%s type=%s", peerURL, msgType)
 			return
 		}
 
-		switch msgType {
-		case "consensus":
-			var s consensus.State
-			if err := json.Unmarshal(payload, &s); err == nil {
-				diffuser.Enqueue(&s)
-			}
-		case "note_announce":
-			var ann struct {
-				ID     string `json:"id"`
-				Source string `json:"source"`
-				PubKey string `json:"pubkey"`
-				Round  int64  `json:"round"`
-			}
-			if err := json.Unmarshal(payload, &ann); err == nil {
-				prop.AddNote(ann.ID, ann.Source, ann.PubKey, ann.Round)
-			}
-		}
+		handlePeerMessage(cfg, peerMgr, diffuser, prop, peerURL, msgType, payload)
 	})
+
+	fetcher := newQuantumFetcher(relayURL, store, diffuser, cfg.Trust)
+	prop = quantum.NewPropagator(graph, graph.GetRelayIndex(relayURL), cfg.Quantum.FetchThreshold, fetcher.Fetch)
+
+	applyTrustWeights(peerMgr, cfg.Trust)
 
 	for _, peerURL := range cfg.Peers {
 		if err := peerMgr.Connect(peerURL); err != nil {
@@ -124,6 +117,9 @@ func main() {
 
 	r.On.Event = func(c rely.Client, event *nostr.Event) rely.EventResult {
 		store.Save(*event)
+		if event.Kind == 1984 {
+			applyKind1984Report(diffuser, event, trustReportWeight(cfg.Trust))
+		}
 		prop.AddNote(event.ID, relayURL, event.PubKey, diffuser.GetRound())
 		peerMgr.Broadcast("note_announce", map[string]any{
 			"id":     event.ID,
@@ -164,4 +160,254 @@ func main() {
 		log.Printf("relay stopped: %v", err)
 		os.Exit(1)
 	}
+}
+
+func applyTrustWeights(peerMgr *p2p.PeerManager, trust TrustConfig) {
+	if peerMgr == nil || !trust.Enabled {
+		return
+	}
+
+	for _, url := range trust.Peers {
+		peerMgr.SetTrustWeight(url, trust.Weight)
+	}
+}
+
+func trustReportWeight(trust TrustConfig) float64 {
+	if !trust.Enabled {
+		return 1
+	}
+	if trust.Weight <= 0 {
+		return 1
+	}
+	return trust.Weight
+}
+
+func applyKind1984Report(diffuser *consensus.Diffuser, event *nostr.Event, weight float64) {
+	if diffuser == nil || event == nil {
+		return
+	}
+	if weight <= 0 {
+		weight = 1
+	}
+
+	for _, tag := range event.Tags {
+		if len(tag) < 2 || tag[0] != "p" {
+			continue
+		}
+
+		reported := tag[1]
+		current := diffuser.GetReputation(reported)
+		delta := -0.1 * weight
+		diffuser.SetReputation(reported, clamp(current+delta, -1, 1))
+	}
+}
+
+func handlePeerMessage(cfg *Config, peerMgr *p2p.PeerManager, diffuser *consensus.Diffuser, prop *quantum.Propagator, peerURL, msgType string, payload json.RawMessage) {
+	switch msgType {
+	case "consensus":
+		if diffuser == nil {
+			return
+		}
+		var s consensus.State
+		if err := json.Unmarshal(payload, &s); err == nil {
+			weight := 1.0
+			if peerMgr != nil {
+				weight = peerMgr.TrustWeight(peerURL)
+			}
+			diffuser.Enqueue(&s, weight)
+		}
+	case "note_announce":
+		if prop == nil {
+			return
+		}
+		var ann struct {
+			ID     string `json:"id"`
+			Source string `json:"source"`
+			PubKey string `json:"pubkey"`
+			Round  int64  `json:"round"`
+		}
+		if err := json.Unmarshal(payload, &ann); err == nil {
+			prop.AddNote(ann.ID, ann.Source, ann.PubKey, ann.Round)
+		}
+	case "block_peer":
+		if cfg == nil || peerMgr == nil || !cfg.Trust.Enabled {
+			return
+		}
+		if peerMgr.TrustWeight(peerURL) <= 1.0 {
+			return
+		}
+
+		var target string
+		if err := json.Unmarshal(payload, &target); err != nil || target == "" {
+			return
+		}
+
+		log.Printf("trusted peer requested block peer=%s from=%s", target, peerURL)
+		peerMgr.Disconnect(target)
+		peerMgr.BroadcastToTrusted("block_peer", target)
+	}
+}
+
+func clamp(v, lo, hi float64) float64 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+type quantumFetcher struct {
+	localRelayURL string
+	store         *storage.Store
+	diffuser      *consensus.Diffuser
+	trust         TrustConfig
+
+	mu       sync.Mutex
+	inFlight map[string]struct{}
+}
+
+func newQuantumFetcher(localRelayURL string, store *storage.Store, diffuser *consensus.Diffuser, trust TrustConfig) *quantumFetcher {
+	return &quantumFetcher{
+		localRelayURL: localRelayURL,
+		store:         store,
+		diffuser:      diffuser,
+		trust:         trust,
+		inFlight:      make(map[string]struct{}),
+	}
+}
+
+func (f *quantumFetcher) Fetch(noteID, sourceRelay string) {
+	if f == nil || noteID == "" || sourceRelay == "" {
+		return
+	}
+	if sourceRelay == f.localRelayURL {
+		return
+	}
+
+	f.mu.Lock()
+	if _, ok := f.inFlight[noteID]; ok {
+		f.mu.Unlock()
+		return
+	}
+	f.inFlight[noteID] = struct{}{}
+	f.mu.Unlock()
+
+	go func() {
+		defer func() {
+			f.mu.Lock()
+			delete(f.inFlight, noteID)
+			f.mu.Unlock()
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+
+		event, err := fetchEventFromRelay(ctx, sourceRelay, noteID)
+		if err != nil {
+			log.Printf("quantum fetch failed note=%s source=%s: %v", noteID, sourceRelay, err)
+			return
+		}
+		if event == nil {
+			return
+		}
+
+		f.store.Save(*event)
+		if event.Kind == 1984 {
+			applyKind1984Report(f.diffuser, event, trustReportWeight(f.trust))
+		}
+		log.Printf("quantum fetch complete note=%s source=%s kind=%d", noteID, sourceRelay, event.Kind)
+	}()
+}
+
+func fetchEventFromRelay(ctx context.Context, relayURL, noteID string) (*nostr.Event, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	conn, _, err := websocket.DefaultDialer.Dial(normalizeRelayURL(relayURL), nil)
+	if err != nil {
+		return nil, fmt.Errorf("dial relay: %w", err)
+	}
+	defer conn.Close()
+
+	reqID := noteID
+	req := []any{"REQ", reqID, nostr.Filter{IDs: []string{noteID}, Limit: 1}}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal req: %w", err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+		return nil, fmt.Errorf("send req: %w", err)
+	}
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(4 * time.Second)
+	}
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return nil, fmt.Errorf("set read deadline: %w", err)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			return nil, fmt.Errorf("read response: %w", err)
+		}
+
+		var frame []json.RawMessage
+		if err := json.Unmarshal(msg, &frame); err != nil {
+			continue
+		}
+		if len(frame) == 0 {
+			continue
+		}
+
+		var label string
+		if err := json.Unmarshal(frame[0], &label); err != nil {
+			continue
+		}
+
+		switch label {
+		case "EVENT":
+			if len(frame) < 3 {
+				continue
+			}
+			var eventID string
+			if err := json.Unmarshal(frame[1], &eventID); err != nil || eventID != reqID {
+				continue
+			}
+			var event nostr.Event
+			if err := json.Unmarshal(frame[2], &event); err != nil {
+				continue
+			}
+			if event.ID != noteID {
+				continue
+			}
+			return &event, nil
+		case "EOSE", "CLOSED", "NOTICE":
+			if len(frame) > 1 {
+				var responseID string
+				_ = json.Unmarshal(frame[1], &responseID)
+				if responseID != "" && responseID != reqID {
+					continue
+				}
+			}
+			return nil, fmt.Errorf("source relay returned %s for note %s", label, noteID)
+		}
+	}
+}
+
+func normalizeRelayURL(relayURL string) string {
+	if strings.HasPrefix(relayURL, "ws://") || strings.HasPrefix(relayURL, "wss://") {
+		return relayURL
+	}
+	return "ws://" + relayURL
 }

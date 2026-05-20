@@ -49,3 +49,36 @@ peers:
 		t.Errorf("Peers len = %d, want 1", len(cfg.Peers))
 	}
 }
+
+func TestParseTrustConfig(t *testing.T) {
+	input := `
+relay:
+  address: ":8080"
+trust:
+  enabled: true
+  weight: 3.0
+  peers:
+    - "wss://trusted1.example.com"
+    - "wss://trusted2.example.com"
+`
+
+	cfg := defaultConfig()
+	if err := parseConfig(input, cfg); err != nil {
+		t.Fatalf("parseConfig error: %v", err)
+	}
+	if !cfg.Trust.Enabled {
+		t.Error("expected Trust.Enabled == true")
+	}
+	if cfg.Trust.Weight != 3.0 {
+		t.Errorf("expected Trust.Weight == 3.0, got %v", cfg.Trust.Weight)
+	}
+	if len(cfg.Trust.Peers) != 2 {
+		t.Fatalf("expected 2 trust peers, got %d", len(cfg.Trust.Peers))
+	}
+	if cfg.Trust.Peers[0] != "wss://trusted1.example.com" {
+		t.Errorf("unexpected peer[0]: %s", cfg.Trust.Peers[0])
+	}
+	if cfg.Trust.Peers[1] != "wss://trusted2.example.com" {
+		t.Errorf("unexpected peer[1]: %s", cfg.Trust.Peers[1])
+	}
+}
