@@ -274,6 +274,7 @@ flowchart TD
     RJ --> DIFF
 
     PROP -->|"prob > threshold\nfetch via WS REQ"| PEER_RELAY([Peer Relay])
+    PEER_RELAY -->|"fetched event\nstore.Save\nr.Broadcast"| D
 
     subgraph p2p ["peer mesh"]
         PM["PeerManager\n(peer.go)\nenvelope · ping\nbuffered send"]
