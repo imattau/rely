@@ -47,7 +47,22 @@ prob = |amp|²  × ReputationFactor(rep, γ, t)
 
 If `prob > fetch_threshold`, the note is fetched from its source relay. A small **exploration floor** (`0.02 × (1 − exp(−t/25))`) prevents notes from getting permanently stuck at zero probability in weakly-connected graphs.
 
-The fetch itself is a real websocket round-trip: the relay opens a connection back to the source relay, sends a Nostr `REQ` for the specific note ID, waits for `EVENT`/`EOSE`, and stores the returned note locally. That means the quantum layer now reduces actual relay-to-relay traffic, not just internal bookkeeping.
+The fetch itself is a real websocket round-trip: the relay opens a connection back to the source relay, sends a Nostr `REQ` for the specific note ID, waits for `EVENT`/`EOSE`, and stores the returned note locally. That means the quantum layer reduces actual relay-to-relay traffic, not just internal bookkeeping.
+
+#### Hop count does not predict propagation speed
+
+A counterintuitive but validated property of the walk: **a direct neighbour (1 hop) is not necessarily fetched before a 2-hop relay**. The amplitude `⟨i|exp(−iLt)|s⟩` is a sum of rotating phase components — one per eigenvalue of the Laplacian. At any given time `t`, those components may constructively or destructively interfere depending on the graph structure. A 2-hop path can accumulate constructive interference earlier than a 1-hop path whose phase happens to cancel at the local relay.
+
+Empirically (see `internal/quantum/topology_test.go`):
+
+| Topology | Source | First fetch round | Peak probability |
+|---|---|---|---|
+| Hierarchical (15 relays) | Sibling leaf (2 hops) | 3 | 0.2281 |
+| Hierarchical (15 relays) | Direct hub (1 hop) | 17 | 0.0983 |
+| Hierarchical (15 relays) | Far leaf (4 hops) | never | 0.0247 |
+| Flat mesh (15 relays, fully connected) | Any source | floor-driven | 0.0178 |
+
+The flat-mesh result is the most important for Nostr deployments: in a fully-connected relay graph, walk probability stays below threshold for all sources and the exploration floor drives all propagation. **The quantum walk adds the most value in non-uniform, hierarchical, or sparse topologies** — exactly the kind of mesh that forms when relays have different specialisations, geographic locations, or trust relationships.
 
 ### 3. Reputation damping
 
