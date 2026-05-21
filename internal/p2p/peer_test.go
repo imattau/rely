@@ -3,6 +3,7 @@ package p2p
 import (
 	"encoding/json"
 	"net"
+	"net/http"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,7 +30,7 @@ func TestBroadcastAndReceive(t *testing.T) {
 	pm.peers[p.url] = p
 	pm.mu.Unlock()
 
-	go pm.writeLoop(p)
+	go pm.writeLoop(p, websocket.NewConn(clientConn, true), p.done)
 	defer close(p.done)
 
 	pm.Broadcast("ping", map[string]string{"hello": "world"})
@@ -125,5 +126,85 @@ func TestDisconnect(t *testing.T) {
 	case <-p.done:
 	default:
 		t.Fatal("expected peer done channel to be closed")
+	}
+}
+
+func TestReconnectLoop(t *testing.T) {
+	var accepts int32
+	firstDone := make(chan struct{}, 1)
+	readyForBroadcast := make(chan struct{}, 1)
+	received := make(chan Envelope, 1)
+
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+
+		if atomic.AddInt32(&accepts, 1) == 1 {
+			_ = conn.WriteMessage(websocket.TextMessage, []byte(`["ping",{"hello":"first"}]`))
+			time.Sleep(75 * time.Millisecond)
+			_ = conn.Close()
+			firstDone <- struct{}{}
+			return
+		}
+
+		readyForBroadcast <- struct{}{}
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("second conn read: %v", err)
+			return
+		}
+
+		var env Envelope
+		if err := json.Unmarshal(msg, &env); err != nil {
+			t.Errorf("unmarshal broadcast: %v", err)
+			return
+		}
+		received <- env
+		_ = conn.Close()
+	})}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	go func() {
+		_ = srv.Serve(ln)
+	}()
+	defer srv.Close()
+
+	pm := NewPeerManager(nil)
+	url := "ws://" + ln.Addr().String()
+	if err := pm.Connect(url); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer pm.Disconnect(url)
+
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for initial disconnect")
+	}
+
+	select {
+	case <-readyForBroadcast:
+	case <-time.After(4 * time.Second):
+		t.Fatal("timed out waiting for reconnect")
+	}
+
+	pm.Broadcast("test", map[string]string{"hello": "world"})
+
+	select {
+	case env := <-received:
+		if env.Type != "test" {
+			t.Fatalf("unexpected envelope type %q", env.Type)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("timed out waiting for broadcast on reconnected peer")
 	}
 }

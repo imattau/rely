@@ -28,3 +28,19 @@ func TestReputation(t *testing.T) {
 		t.Fatal("unknown pubkey should return 0")
 	}
 }
+
+func TestStoreDelete(t *testing.T) {
+	s := storage.NewStore()
+	e := nostr.Event{ID: "abc123", PubKey: "pk1", Kind: 1}
+	s.Save(e)
+
+	if _, ok := s.Get("abc123"); !ok {
+		t.Fatal("expected event before delete")
+	}
+
+	s.Delete("abc123")
+
+	if _, ok := s.Get("abc123"); ok {
+		t.Fatal("expected event to be removed")
+	}
+}

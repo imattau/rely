@@ -12,6 +12,8 @@ type Store struct {
 	reputation map[string]float64
 }
 
+var _ EventStore = (*Store)(nil)
+
 func NewStore() *Store {
 	return &Store{
 		events:     make(map[string]nostr.Event),
@@ -30,6 +32,12 @@ func (s *Store) Get(id string) (nostr.Event, bool) {
 	defer s.mu.RUnlock()
 	e, ok := s.events[id]
 	return e, ok
+}
+
+func (s *Store) Delete(id string) {
+	s.mu.Lock()
+	delete(s.events, id)
+	s.mu.Unlock()
 }
 
 func (s *Store) Query(filters nostr.Filters) []nostr.Event {

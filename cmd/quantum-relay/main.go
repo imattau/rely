@@ -36,14 +36,18 @@ func defaultConfig() *Config {
 			Description: "Nostr relay with quantum walk propagation",
 		},
 		Quantum: QuantumConfig{
-			Gamma:           0.5,
-			FetchThreshold:  0.05,
-			ConsensusTickMs: 500,
-			QuantumTickMs:   1000,
+			Gamma:                0.5,
+			FetchThreshold:       0.05,
+			ConsensusTickMs:      500,
+			QuantumTickMs:        1000,
+			MaxConcurrentFetches: 32,
 		},
 		Spam: SpamConfig{
 			ClientEventsPerSec: 10,
 			PeerAnnouncePerSec: 100,
+		},
+		Storage: StorageConfig{
+			Path: ":memory:",
 		},
 		Trust: TrustConfig{
 			Enabled: false,
@@ -59,7 +63,16 @@ func main() {
 		cfg = defaultConfig()
 	}
 
-	store := storage.NewStore()
+	store, closeStore, err := openConfiguredStore(cfg.Storage.Path)
+	if err != nil {
+		log.Printf("storage init failed: %v", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if closeStore != nil {
+			_ = closeStore()
+		}
+	}()
 	spamDetector := spam.NewRateLimiter(cfg.Spam.ClientEventsPerSec, cfg.Spam.PeerAnnouncePerSec)
 
 	relayURL := localRelayURL(cfg.Relay.Listen)
@@ -90,7 +103,7 @@ func main() {
 		handlePeerMessage(cfg, peerMgr, diffuser, prop, peerURL, msgType, payload)
 	})
 
-	fetcher := newQuantumFetcher(relayURL, store, diffuser, cfg.Trust)
+	fetcher := newQuantumFetcher(relayURL, store, diffuser, cfg.Trust, cfg.Quantum.MaxConcurrentFetches)
 	prop = quantum.NewPropagator(graph, graph.GetRelayIndex(relayURL), cfg.Quantum.FetchThreshold, fetcher.Fetch)
 
 	applyTrustWeights(peerMgr, cfg.Trust)
@@ -101,10 +114,24 @@ func main() {
 		}
 	}
 
-	r := rely.NewRelay()
+	var relayOpts []rely.Option
+	if cfg.Auth.Required {
+		relayOpts = append(relayOpts, rely.WithAuthURL(relayURL))
+	}
+	r := rely.NewRelay(relayOpts...)
 	fetcher.relay = r
 
+	if cfg.Auth.Required {
+		r.On.Connect = func(c rely.Client) {
+			c.SendAuth()
+		}
+	}
+
 	r.Reject.Event.Append(func(c rely.Client, event *nostr.Event) error {
+		if cfg.Auth.Required && !c.IsAuthed() {
+			return fmt.Errorf("auth-required: authentication needed to publish events")
+		}
+
 		if !spamDetector.AllowClient(c.UID()) {
 			return fmt.Errorf("rate limited")
 		}
@@ -118,6 +145,7 @@ func main() {
 
 	r.On.Event = func(c rely.Client, event *nostr.Event) rely.EventResult {
 		store.Save(*event)
+		applyNIP09Deletion(store, event)
 		if event.Kind == 1984 {
 			applyKind1984Report(diffuser, event, trustReportWeight(cfg.Trust))
 		}
@@ -160,6 +188,25 @@ func main() {
 	if err := r.StartAndServe(ctx, cfg.Relay.Listen); err != nil {
 		log.Printf("relay stopped: %v", err)
 		os.Exit(1)
+	}
+}
+
+func applyNIP09Deletion(store storage.EventStore, event *nostr.Event) {
+	if store == nil || event == nil || event.Kind != 5 {
+		return
+	}
+
+	for _, tag := range event.Tags {
+		if len(tag) < 2 || tag[0] != "e" {
+			continue
+		}
+
+		targetID := tag[1]
+		original, ok := store.Get(targetID)
+		if !ok || original.PubKey != event.PubKey {
+			continue
+		}
+		store.Delete(targetID)
 	}
 }
 
@@ -249,6 +296,18 @@ func handlePeerMessage(cfg *Config, peerMgr *p2p.PeerManager, diffuser *consensu
 	}
 }
 
+func openConfiguredStore(path string) (storage.EventStore, func() error, error) {
+	if path == "" || path == ":memory:" {
+		return storage.NewStore(), func() error { return nil }, nil
+	}
+
+	sqliteStore, err := storage.NewSQLiteStore(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	return sqliteStore, sqliteStore.Close, nil
+}
+
 func clamp(v, lo, hi float64) float64 {
 	if v < lo {
 		return lo
@@ -261,22 +320,27 @@ func clamp(v, lo, hi float64) float64 {
 
 type quantumFetcher struct {
 	localRelayURL string
-	store         *storage.Store
+	store         storage.EventStore
 	diffuser      *consensus.Diffuser
 	trust         TrustConfig
 	relay         *rely.Relay
 
 	mu       sync.Mutex
 	inFlight map[string]struct{}
+	sem      chan struct{}
 }
 
-func newQuantumFetcher(localRelayURL string, store *storage.Store, diffuser *consensus.Diffuser, trust TrustConfig) *quantumFetcher {
+func newQuantumFetcher(localRelayURL string, store storage.EventStore, diffuser *consensus.Diffuser, trust TrustConfig, maxConcurrent int) *quantumFetcher {
+	if maxConcurrent <= 0 {
+		maxConcurrent = 32
+	}
 	return &quantumFetcher{
 		localRelayURL: localRelayURL,
 		store:         store,
 		diffuser:      diffuser,
 		trust:         trust,
 		inFlight:      make(map[string]struct{}),
+		sem:           make(chan struct{}, maxConcurrent),
 	}
 }
 
@@ -297,7 +361,9 @@ func (f *quantumFetcher) Fetch(noteID, sourceRelay string) {
 	f.mu.Unlock()
 
 	go func() {
+		f.sem <- struct{}{}
 		defer func() {
+			<-f.sem
 			f.mu.Lock()
 			delete(f.inFlight, noteID)
 			f.mu.Unlock()

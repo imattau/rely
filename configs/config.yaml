@@ -8,10 +8,17 @@ quantum:
   fetch_threshold: 0.05
   consensus_tick_ms: 500
   quantum_tick_ms: 1000
+  max_concurrent_fetches: 32
 
 spam:
   client_events_per_sec: 10
   peer_announce_per_sec: 100
+
+storage:
+  path: "rely.db"
+
+auth:
+  required: false
 
 peers:
   - "ws://relay1.example.com:8081"

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net"
 	"net/http"
@@ -77,6 +78,127 @@ func TestKind1984ReputationDelta(t *testing.T) {
 	expected := -0.4
 	if math.Abs(got-expected) > 1e-9 {
 		t.Fatalf("expected %v, got %v", expected, got)
+	}
+}
+
+func TestApplyNIP09Deletion(t *testing.T) {
+	store := storage.NewStore()
+	owned := nostr.Event{ID: "owned", PubKey: "author", Kind: 1}
+	foreign := nostr.Event{ID: "foreign", PubKey: "other", Kind: 1}
+	store.Save(owned)
+	store.Save(foreign)
+
+	deleteEvent := &nostr.Event{
+		Kind:   5,
+		PubKey: "author",
+		Tags: nostr.Tags{
+			{"e", "owned"},
+			{"e", "foreign"},
+		},
+	}
+
+	applyNIP09Deletion(store, deleteEvent)
+
+	if _, ok := store.Get("owned"); ok {
+		t.Fatal("expected owned event to be deleted")
+	}
+	if _, ok := store.Get("foreign"); !ok {
+		t.Fatal("expected foreign event to remain")
+	}
+}
+
+func TestAuthRequiredRejectsUnauthedEvent(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Auth.Required = true
+
+	store := storage.NewStore()
+	relay := rely.NewRelay(rely.WithAuthURL("relay.example.com"))
+	relay.Reject.Connection.Clear()
+	relay.Reject.Event.Clear()
+	relay.On.Connect = func(c rely.Client) {
+		c.SendAuth()
+	}
+	relay.Reject.Event.Append(func(c rely.Client, event *nostr.Event) error {
+		if cfg.Auth.Required && !c.IsAuthed() {
+			return fmt.Errorf("auth-required: authentication needed to publish events")
+		}
+		return nil
+	})
+	relay.On.Event = func(c rely.Client, event *nostr.Event) rely.EventResult {
+		store.Save(*event)
+		return rely.Success()
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen relay: %v", err)
+	}
+	defer ln.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go relay.Start(ctx)
+	go func() { _ = (&http.Server{Handler: relay}).Serve(ln) }()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+ln.Addr().String(), nil)
+	if err != nil {
+		t.Fatalf("dial relay: %v", err)
+	}
+	defer conn.Close()
+
+	_, msg, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read auth challenge: %v", err)
+	}
+	var authParts []json.RawMessage
+	if err := json.Unmarshal(msg, &authParts); err != nil {
+		t.Fatalf("unmarshal auth challenge: %v", err)
+	}
+	if len(authParts) == 0 {
+		t.Fatal("expected auth challenge response")
+	}
+	var label string
+	if err := json.Unmarshal(authParts[0], &label); err != nil || label != "AUTH" {
+		t.Fatalf("expected AUTH challenge, got %s", string(msg))
+	}
+
+	event := nostr.Event{
+		CreatedAt: nostr.Now(),
+		Kind:      1,
+		PubKey:    "unauth-pubkey",
+		Content:   "blocked",
+	}
+	if err := event.Sign(nostr.GeneratePrivateKey()); err != nil {
+		t.Fatalf("sign event: %v", err)
+	}
+	payload, err := json.Marshal([]any{"EVENT", event})
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+		t.Fatalf("write event: %v", err)
+	}
+
+	_, msg, err = conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read ok response: %v", err)
+	}
+	var okParts []json.RawMessage
+	if err := json.Unmarshal(msg, &okParts); err != nil {
+		t.Fatalf("unmarshal ok response: %v", err)
+	}
+	if len(okParts) < 3 {
+		t.Fatalf("unexpected OK response: %s", string(msg))
+	}
+	if err := json.Unmarshal(okParts[0], &label); err != nil || label != "OK" {
+		t.Fatalf("expected OK response, got %s", string(msg))
+	}
+	var accepted bool
+	if err := json.Unmarshal(okParts[2], &accepted); err != nil {
+		t.Fatalf("parse accepted flag: %v", err)
+	}
+	if accepted {
+		t.Fatal("expected unauthenticated event to be rejected")
 	}
 }
 
@@ -244,7 +366,7 @@ func TestQuantumFetchBroadcastToSubscriber(t *testing.T) {
 	}
 
 	// --- fetcher: wired to local relay ---
-	fetcher := newQuantumFetcher("ws://"+localLn.Addr().String(), localStore, consensus.NewDiffuser(nil, nil), TrustConfig{})
+	fetcher := newQuantumFetcher("ws://"+localLn.Addr().String(), localStore, consensus.NewDiffuser(nil, nil), TrustConfig{}, 32)
 	fetcher.relay = localRelay
 
 	// trigger fetch from source relay

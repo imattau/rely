@@ -12,8 +12,10 @@ type Config struct {
 	Relay   RelayConfig   `yaml:"relay"`
 	Quantum QuantumConfig `yaml:"quantum"`
 	Spam    SpamConfig    `yaml:"spam"`
+	Storage StorageConfig `yaml:"storage"`
 	Peers   []string      `yaml:"peers"`
 	Trust   TrustConfig   `yaml:"trust"`
+	Auth    AuthConfig    `yaml:"auth"`
 }
 
 type RelayConfig struct {
@@ -23,10 +25,11 @@ type RelayConfig struct {
 }
 
 type QuantumConfig struct {
-	Gamma           float64 `yaml:"gamma"`
-	FetchThreshold  float64 `yaml:"fetch_threshold"`
-	ConsensusTickMs int     `yaml:"consensus_tick_ms"`
-	QuantumTickMs   int     `yaml:"quantum_tick_ms"`
+	Gamma                float64 `yaml:"gamma"`
+	FetchThreshold       float64 `yaml:"fetch_threshold"`
+	ConsensusTickMs      int     `yaml:"consensus_tick_ms"`
+	QuantumTickMs        int     `yaml:"quantum_tick_ms"`
+	MaxConcurrentFetches int     `yaml:"max_concurrent_fetches"`
 }
 
 func (q QuantumConfig) ConsensusTick() time.Duration {
@@ -42,10 +45,18 @@ type SpamConfig struct {
 	PeerAnnouncePerSec int `yaml:"peer_announce_per_sec"`
 }
 
+type StorageConfig struct {
+	Path string `yaml:"path"`
+}
+
 type TrustConfig struct {
 	Enabled bool     `yaml:"enabled"`
 	Weight  float64  `yaml:"weight"`
 	Peers   []string `yaml:"peers"`
+}
+
+type AuthConfig struct {
+	Required bool `yaml:"required"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -148,6 +159,12 @@ func parseConfig(content string, cfg *Config) error {
 					return fmt.Errorf("invalid quantum.quantum_tick_ms: %w", err)
 				}
 				cfg.Quantum.QuantumTickMs = v
+			case "max_concurrent_fetches":
+				v, err := strconv.Atoi(value)
+				if err != nil {
+					return fmt.Errorf("invalid quantum.max_concurrent_fetches: %w", err)
+				}
+				cfg.Quantum.MaxConcurrentFetches = v
 			}
 		case "spam":
 			switch key {
@@ -164,6 +181,11 @@ func parseConfig(content string, cfg *Config) error {
 				}
 				cfg.Spam.PeerAnnouncePerSec = v
 			}
+		case "storage":
+			switch key {
+			case "path":
+				cfg.Storage.Path = value
+			}
 		case "trust":
 			switch key {
 			case "enabled":
@@ -174,6 +196,11 @@ func parseConfig(content string, cfg *Config) error {
 					return fmt.Errorf("invalid trust.weight: %w", err)
 				}
 				cfg.Trust.Weight = v
+			}
+		case "auth":
+			switch key {
+			case "required":
+				cfg.Auth.Required = value == "true"
 			}
 		}
 	}
