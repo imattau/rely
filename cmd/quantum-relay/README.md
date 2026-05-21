@@ -14,7 +14,10 @@ A production-ready Nostr relay built on [rely v2](../../README.md) that uses **c
 | **Trusted peers** | Operator-configured peer weights influence consensus merges, trusted peer broadcasts, block propagation, and reputation deltas |
 | **P2P peer mesh** | Typed WebSocket envelope protocol (`type`/`payload`) with 30-second keepalive pings and buffered per-peer send queues |
 | **Token-bucket rate limiting** | Independent per-client and per-peer token buckets; no external dependencies |
-| **In-memory storage** | Thread-safe event store with filter matching and per-pubkey reputation |
+| **SQLite persistence** | Events and reputation survive restarts; configurable path, falls back to `:memory:` |
+| **Fetch backpressure** | Configurable concurrency cap on outbound fetches prevents goroutine bursts |
+| **NIP-42 auth enforcement** | Optional: reject unauthenticated EVENT submissions; sends AUTH challenge on connect |
+| **NIP-09 deletion** | Kind-5 events delete referenced notes, enforcing pubkey ownership |
 | **YAML configuration** | Zero-dependency config parser; sane defaults if file is missing |
 | **NIP-01 / NIP-11 / NIP-42** | Full Nostr protocol support via rely v2 |
 
@@ -183,22 +186,29 @@ relay:
   description: "Nostr relay with quantum walk propagation"
 
 quantum:
-  gamma: 0.5                 # reputation damping strength
-  fetch_threshold: 0.05      # minimum walk probability to trigger a fetch
-  consensus_tick_ms: 500     # how often to gossip consensus state to peers
-  quantum_tick_ms: 1000      # how often to evaluate propagation probabilities
+  gamma: 0.5                   # reputation damping strength
+  fetch_threshold: 0.05        # minimum walk probability to trigger a fetch
+  consensus_tick_ms: 500       # how often to gossip consensus state to peers
+  quantum_tick_ms: 1000        # how often to evaluate propagation probabilities
+  max_concurrent_fetches: 32   # max parallel outbound fetch goroutines
+
+storage:
+  path: "events.db"            # SQLite file path; ":memory:" for in-process only
+
+auth:
+  required: false              # require NIP-42 auth before accepting EVENT submissions
 
 spam:
-  client_events_per_sec: 10  # token-bucket rate per client
-  peer_announce_per_sec: 100 # token-bucket rate per peer relay
+  client_events_per_sec: 10    # token-bucket rate per client
+  peer_announce_per_sec: 100   # token-bucket rate per peer relay
 
 peers:
   - "ws://relay2.example.com"
   - "ws://relay3.example.com"
 
 trust:
-  enabled: false             # enable local trusted-peer behaviour
-  weight: 2.0                # trust multiplier for listed peers
+  enabled: false               # enable local trusted-peer behaviour
+  weight: 2.0                  # trust multiplier for listed peers
   peers:
     - "ws://relay2.example.com"
 ```
@@ -213,6 +223,9 @@ Place the file at `configs/config.yaml` relative to the binary. If the file is m
 | `fetch_threshold` | Lower = fetch more aggressively. 0 fetches everything. |
 | `consensus_tick_ms` | Faster = quicker reputation convergence; more network traffic. |
 | `quantum_tick_ms` | Faster = notes fetched sooner; higher CPU. |
+| `max_concurrent_fetches` | Cap on parallel outbound fetch goroutines. Higher = more responsive under load; lower = less resource use. |
+| `storage.path` | Path to SQLite database file. Use `":memory:"` for ephemeral in-process storage. |
+| `auth.required` | When true, clients must complete NIP-42 auth before events are accepted. |
 | `trust.enabled` | Enables trusted-peer weighting and trusted block propagation. |
 | `trust.weight` | Multiplier applied to listed trusted peers. |
 | `trust.peers` | List of peer URLs that should receive the trust weight. |
@@ -311,7 +324,9 @@ internal/
   spam/
     detector.go    — RateLimiter: per-ID token buckets (no stdlib rate pkg needed)
   storage/
-    store.go       — Store: in-memory events + per-pubkey reputation
+    store.go           — Store: in-memory events + per-pubkey reputation
+    sqlite_store.go    — SQLiteStore: persistent events + reputation via modernc.org/sqlite
+    store_interface.go — EventStore interface (Save/Get/Delete/Query/reputation methods)
 ```
 
 ---

@@ -1,4 +1,4 @@
 **/*.log
 **/*.test
 docs/superpowers/
-quantum-relay
+/quantum-relay
