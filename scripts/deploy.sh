@@ -776,18 +776,23 @@ ensure_directories() {
 }
 
 write_config() {
-	if [[ -f "$CONFIG_FILE" ]]; then
-		log "keeping existing config at ${CONFIG_FILE}"
-		return
-	fi
-
 	local listen
 	listen="${RELAY_LISTEN_RESOLVED:-$(choose_listen)}"
 	local public_url
 	public_url="$(choose_public_url)"
 	local peer_listen
 	peer_listen="${PEER_LISTEN_RESOLVED:-$(choose_peer_listen)}"
-	log "writing config to ${CONFIG_FILE}"
+	if [[ -f "$CONFIG_FILE" ]]; then
+		log "rewriting complete config at ${CONFIG_FILE}"
+		local backup_dir backup_file
+		backup_dir="$(mktemp -d)"
+		TEMP_DIRS+=("$backup_dir")
+		backup_file="${backup_dir}/$(basename "$CONFIG_FILE").bak"
+		run_root cp -a "$CONFIG_FILE" "$backup_file"
+		BACKUPS["$CONFIG_FILE"]="$backup_file"
+	else
+		log "writing config to ${CONFIG_FILE}"
+	fi
 	local tmp
 	tmp="$(mktemp)"
 	cat >"$tmp" <<EOF
@@ -1116,6 +1121,44 @@ parse_public_url_from_config() {
 	printf '%s' "${public_url:-}"
 }
 
+parse_relay_name_from_config() {
+	if [[ ! -f "$CONFIG_FILE" ]]; then
+		printf '%s' ""
+		return
+	fi
+	local value
+	value="$(awk '
+		/^[[:space:]]*relay:[[:space:]]*$/ { in_relay=1; next }
+		in_relay && /^[[:space:]]*name:[[:space:]]*/ {
+			sub(/^[[:space:]]*name:[[:space:]]*/, "", $0)
+			gsub(/"/, "", $0)
+			gsub(/\047/, "", $0)
+			print $0
+			exit
+		}
+	' "$CONFIG_FILE")"
+	printf '%s' "${value:-}"
+}
+
+parse_relay_description_from_config() {
+	if [[ ! -f "$CONFIG_FILE" ]]; then
+		printf '%s' ""
+		return
+	fi
+	local value
+	value="$(awk '
+		/^[[:space:]]*relay:[[:space:]]*$/ { in_relay=1; next }
+		in_relay && /^[[:space:]]*description:[[:space:]]*/ {
+			sub(/^[[:space:]]*description:[[:space:]]*/, "", $0)
+			gsub(/"/, "", $0)
+			gsub(/\047/, "", $0)
+			print $0
+			exit
+		}
+	' "$CONFIG_FILE")"
+	printf '%s' "${value:-}"
+}
+
 update_config_public_url() {
 	local public_url="$1"
 	local current
@@ -1245,6 +1288,22 @@ install_action() {
 	fi
 	update_config_listen "$RELAY_LISTEN_RESOLVED"
 	update_config_peer_listen "$PEER_LISTEN_RESOLVED"
+	if [[ -f "$CONFIG_FILE" ]]; then
+		if [[ "$RELAY_NAME_FLAG_SET" == false && "$RELAY_NAME_ENV_SET" == false ]]; then
+			local existing_name
+			existing_name="$(parse_relay_name_from_config)"
+			if [[ -n "$existing_name" ]]; then
+				RELAY_NAME="$existing_name"
+			fi
+		fi
+		if [[ "$RELAY_DESCRIPTION_FLAG_SET" == false && "$RELAY_DESCRIPTION_ENV_SET" == false ]]; then
+			local existing_description
+			existing_description="$(parse_relay_description_from_config)"
+			if [[ -n "$existing_description" ]]; then
+				RELAY_DESCRIPTION="$existing_description"
+			fi
+		fi
+	fi
 	if [[ "$RELAY_NAME_FLAG_SET" == false && "$RELAY_NAME_ENV_SET" == false ]]; then
 		prompt_required RELAY_NAME "Relay name" "$RELAY_NAME"
 	fi
@@ -1286,10 +1345,25 @@ update_action() {
 	fi
 	update_config_listen "$RELAY_LISTEN_RESOLVED"
 	update_config_peer_listen "$PEER_LISTEN_RESOLVED"
+	if [[ "$RELAY_NAME_FLAG_SET" == false && "$RELAY_NAME_ENV_SET" == false ]]; then
+		local existing_name
+		existing_name="$(parse_relay_name_from_config)"
+		if [[ -n "$existing_name" ]]; then
+			RELAY_NAME="$existing_name"
+		fi
+	fi
+	if [[ "$RELAY_DESCRIPTION_FLAG_SET" == false && "$RELAY_DESCRIPTION_ENV_SET" == false ]]; then
+		local existing_description
+		existing_description="$(parse_relay_description_from_config)"
+		if [[ -n "$existing_description" ]]; then
+			RELAY_DESCRIPTION="$existing_description"
+		fi
+	fi
 	build_binary
 	if [[ ! -f "$CONFIG_FILE" ]]; then
 		warn "config file missing; run install to create ${CONFIG_FILE}"
 	fi
+	write_config
 	run_root systemctl daemon-reload
 	run_root systemctl restart "$SERVICE_NAME"
 	wait_for_relay "$(parse_listen_from_config)"
