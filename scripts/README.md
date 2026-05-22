@@ -21,6 +21,7 @@ It uses the current git checkout as its source tree and pulls from `origin` duri
 - The relay smoke test requests NIP-11 with `Accept: application/nostr+json`; plain GETs are expected to return `400` by the relay and are not used as readiness checks.
 - When Caddy is detected, the installer also probes the public websocket endpoint over `wss://` using a real websocket upgrade handshake. Nginx is probed over `ws://` because the generated site config is HTTP-only unless you add TLS separately.
 - Before starting the service, the installer stops any existing `quantum-relay` unit and checks whether the listen port is already occupied by another process. If the port is busy, it exits with a diagnostic instead of looping on restart failures.
+- If the requested listen address is occupied, the installer automatically walks upward from the requested port until it finds a free local port, then writes that chosen port into the config and proxy snippets. If an existing config is present, it patches `relay.listen` to match the chosen port instead of leaving the old value behind.
 
 ## Examples
 

@@ -241,6 +241,111 @@ proxy_smoke_test() {
 	esac
 }
 
+listen_port_in_use() {
+	local listen="$1"
+	local port
+	port="${listen##*:}"
+	if [[ "$port" == "$listen" ]]; then
+		return 1
+	fi
+	if ! command -v ss >/dev/null 2>&1; then
+		return 1
+	fi
+	ss -H -ltn "sport = :${port}" | grep -q .
+}
+
+pick_free_listen() {
+	local desired="$1"
+	local host port candidate
+
+	host="${desired%:*}"
+	port="${desired##*:}"
+	if [[ -z "$host" || "$host" == "$desired" ]]; then
+		host="127.0.0.1"
+	fi
+	if [[ -z "$port" || "$port" == "$desired" ]]; then
+		port="8080"
+	fi
+
+	candidate="${host}:${port}"
+	if ! command -v ss >/dev/null 2>&1; then
+		warn "ss not available; using requested listen address ${candidate}"
+		printf '%s' "$candidate"
+		return 0
+	fi
+
+	while listen_port_in_use "$candidate"; do
+		port=$((port + 1))
+		if (( port > 65535 )); then
+			die "no free listen ports available starting at ${desired}"
+		fi
+		candidate="${host}:${port}"
+	done
+
+	if [[ "$candidate" != "$desired" ]]; then
+		warn "listen address ${desired} is busy; using ${candidate} instead"
+	fi
+
+	printf '%s' "$candidate"
+}
+
+update_config_listen() {
+	local listen="$1"
+	local current
+	if [[ ! -f "$CONFIG_FILE" ]]; then
+		return 0
+	fi
+	current="$(parse_listen_from_config)"
+	if [[ -z "$current" || "$current" == "$listen" ]]; then
+		return 0
+	fi
+
+	log "updating relay listen in existing config from ${current} to ${listen}"
+	local tmp backup_dir backup_file
+	tmp="$(mktemp)"
+	if [[ -f "$CONFIG_FILE" ]]; then
+		backup_dir="$(mktemp -d)"
+		TEMP_DIRS+=("$backup_dir")
+		backup_file="${backup_dir}/$(basename "$CONFIG_FILE").bak"
+		run_root cp -a "$CONFIG_FILE" "$backup_file"
+		BACKUPS["$CONFIG_FILE"]="$backup_file"
+	fi
+
+	awk -v new_listen="$listen" '
+		BEGIN {
+			in_relay = 0
+			replaced = 0
+		}
+		/^[[:space:]]*relay:[[:space:]]*$/ {
+			print
+			in_relay = 1
+			next
+		}
+		in_relay && /^[[:space:]]*listen:[[:space:]]*/ && !replaced {
+			printf "  listen: \"%s\"\n", new_listen
+			replaced = 1
+			next
+		}
+		in_relay && /^[^[:space:]]/ {
+			if (!replaced) {
+				printf "  listen: \"%s\"\n", new_listen
+				replaced = 1
+			}
+			in_relay = 0
+		}
+		{
+			print
+		}
+		END {
+			if (in_relay && !replaced) {
+				printf "  listen: \"%s\"\n", new_listen
+			}
+		}
+	' "$CONFIG_FILE" >"$tmp"
+	run_root install -m 0644 "$tmp" "$CONFIG_FILE"
+	rm -f "$tmp"
+}
+
 check_listen_port_free() {
 	local listen="$1"
 	local port
@@ -779,13 +884,16 @@ install_action() {
 		return
 	fi
 	ensure_sudo
+	run_root systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+	LISTEN_OVERRIDE="$(pick_free_listen "$(choose_listen)")"
+	ensure_directories
+	update_config_listen "$LISTEN_OVERRIDE"
 	if [[ "$RELAY_NAME_FLAG_SET" == false && "$RELAY_NAME_ENV_SET" == false ]]; then
 		prompt_required RELAY_NAME "Relay name" "$RELAY_NAME"
 	fi
 	if [[ "$RELAY_DESCRIPTION_FLAG_SET" == false && "$RELAY_DESCRIPTION_ENV_SET" == false ]]; then
 		prompt_required RELAY_DESCRIPTION "Relay description" "$RELAY_DESCRIPTION"
 	fi
-	ensure_directories
 	ensure_system_user
 	build_binary
 	write_config
