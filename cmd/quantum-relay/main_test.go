@@ -59,7 +59,7 @@ func TestInboundPeerAllowed(t *testing.T) {
 	t.Run("restricted mesh rejects unknown peers", func(t *testing.T) {
 		cfg := defaultConfig()
 		cfg.Trust.Enabled = true
-		cfg.Trust.Peers = []string{"wss://trusted.example.com"}
+		cfg.Peers = []string{"wss://trusted.example.com"}
 		if inboundPeerAllowed(cfg, "wss://other.example.com") {
 			t.Fatal("expected inbound peer to be rejected when not in trust allowlist")
 		}
@@ -68,9 +68,9 @@ func TestInboundPeerAllowed(t *testing.T) {
 	t.Run("restricted mesh allows configured peers", func(t *testing.T) {
 		cfg := defaultConfig()
 		cfg.Trust.Enabled = true
-		cfg.Trust.Peers = []string{"wss://trusted.example.com"}
+		cfg.Peers = []string{"wss://trusted.example.com"}
 		if !inboundPeerAllowed(cfg, "ws://trusted.example.com") {
-			t.Fatal("expected inbound peer to be allowed when present in trust allowlist")
+			t.Fatal("expected inbound peer to be allowed when present in peers allowlist")
 		}
 	})
 }
@@ -752,7 +752,7 @@ func TestPeerEndpointTrustGating(t *testing.T) {
 		defer ln.Close()
 
 		allowedPeerURL := "wss://" + ln.Addr().String()
-		cfg.Trust.Peers = []string{allowedPeerURL}
+		cfg.Peers = []string{allowedPeerURL}
 
 		server := newPeerServer(cfg, peerMgr)
 		srv := &http.Server{Handler: server}

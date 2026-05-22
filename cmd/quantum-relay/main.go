@@ -267,7 +267,7 @@ func newPeerServer(cfg *Config, pm *p2p.PeerManager) http.Handler {
 		peerURL := peerConnectionURL(req, cfg)
 		log.Printf("accepted peer websocket url=%s", peerURL)
 		if !inboundPeerAllowed(cfg, peerURL) {
-			log.Printf("rejected inbound peer url=%s trust_enabled=%v peers=%d", peerURL, cfg != nil && cfg.Trust.Enabled, len(cfgPeers(cfg)))
+			log.Printf("rejected inbound peer url=%s trust_enabled=%v peers=%d", peerURL, cfg != nil && cfg.Trust.Enabled, len(allowedInboundPeerURLs(cfg)))
 			_ = conn.Close()
 			return
 		}
@@ -280,24 +280,25 @@ func inboundPeerAllowed(cfg *Config, peerURL string) bool {
 	if cfg == nil || !cfg.Trust.Enabled {
 		return true
 	}
-	if len(cfg.Trust.Peers) == 0 {
+	allowed := allowedInboundPeerURLs(cfg)
+	if len(allowed) == 0 {
 		return false
 	}
 
 	peerKey := peerConnectionKey(peerURL)
-	for _, allowed := range cfg.Trust.Peers {
-		if peerConnectionKey(allowed) == peerKey {
+	for _, candidate := range allowed {
+		if peerConnectionKey(candidate) == peerKey {
 			return true
 		}
 	}
 	return false
 }
 
-func cfgPeers(cfg *Config) []string {
+func allowedInboundPeerURLs(cfg *Config) []string {
 	if cfg == nil {
 		return nil
 	}
-	return cfg.Trust.Peers
+	return cfg.Peers
 }
 
 func servePeerEndpoint(ctx context.Context, handler http.Handler, listen string) error {
