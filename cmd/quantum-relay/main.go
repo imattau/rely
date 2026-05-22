@@ -156,6 +156,7 @@ func main() {
 			applyKind1984Report(diffuser, event, trustReportWeight(cfg.Trust))
 		}
 		prop.AddNote(event.ID, relayURL, event.PubKey, diffuser.GetRound())
+		log.Printf("broadcasting note_announce note=%s source=%s round=%d", event.ID, relayURL, diffuser.GetRound())
 		peerMgr.Broadcast("note_announce", map[string]any{
 			"id":     event.ID,
 			"source": relayURL,
@@ -251,6 +252,7 @@ func newPeerServer(pm *p2p.PeerManager) http.Handler {
 			return
 		}
 
+		log.Printf("accepted peer websocket url=%s", peerConnectionURL(req))
 		pm.Accept(peerConnectionURL(req), conn)
 	})
 	return mux

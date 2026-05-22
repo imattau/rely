@@ -7,6 +7,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	rely "github.com/pippellia-btc/rely/v2"
 	"github.com/pippellia-btc/rely/v2/internal/consensus"
 	"github.com/pippellia-btc/rely/v2/internal/p2p"
+	"github.com/pippellia-btc/rely/v2/internal/quantum"
 	"github.com/pippellia-btc/rely/v2/internal/storage"
 )
 
@@ -492,6 +494,165 @@ func TestQuantumRelayLiveSourcePropagation(t *testing.T) {
 	}
 }
 
+func TestQuantumRelayLiveSourcePeerPropagation(t *testing.T) {
+	sourceCandidates := liveRelayCandidates(os.Getenv("RELAY_LIVE_SOURCE"))
+	if len(sourceCandidates) == 0 {
+		t.Skip("set RELAY_LIVE_SOURCE to a real relay URL or domain to run the live peer propagation smoke test")
+	}
+
+	localStore := storage.NewStore()
+	localRelay := rely.NewRelay()
+	localRelay.Reject.Connection.Clear()
+	localRelay.Reject.Event.Clear()
+	localRelay.On.Event = func(c rely.Client, event *nostr.Event) rely.EventResult {
+		localStore.Save(*event)
+		return rely.Success()
+	}
+	localRelay.On.Req = func(ctx context.Context, c rely.Client, id string, filters nostr.Filters) ([]nostr.Event, error) {
+		_ = ctx
+		_ = c
+		_ = id
+		return localStore.Query(filters), nil
+	}
+
+	localLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen local relay: %v", err)
+	}
+	defer localLn.Close()
+
+	localCtx, localCancel := context.WithCancel(context.Background())
+	defer localCancel()
+	go localRelay.Start(localCtx)
+	go func() { _ = (&http.Server{Handler: localRelay}).Serve(localLn) }()
+
+	localURL := "ws://" + localLn.Addr().String()
+	peerMsgCh := make(chan struct {
+		id     string
+		source string
+		round  int64
+	}, 1)
+
+	diffuser := consensus.NewDiffuser(nil, nil)
+	graph := quantum.NewGraphState()
+	fetcher := newQuantumFetcher(localURL, localStore, diffuser, TrustConfig{}, 32)
+	fetcher.relay = localRelay
+	graph.SetRelays([]string{localURL})
+	graph.Recompute()
+	prop := quantum.NewPropagator(graph, graph.GetRelayIndex(localURL), 0.05, fetcher.Fetch)
+
+	var peerMgr *p2p.PeerManager
+	peerMgr = p2p.NewPeerManager(func(peerURL, msgType string, payload json.RawMessage) {
+		handlePeerMessage(&Config{}, peerMgr, diffuser, prop, peerURL, msgType, payload)
+		if msgType != "note_announce" {
+			return
+		}
+		var ann struct {
+			ID     string `json:"id"`
+			Source string `json:"source"`
+			Round  int64  `json:"round"`
+		}
+		if err := json.Unmarshal(payload, &ann); err != nil {
+			return
+		}
+		select {
+		case peerMsgCh <- struct {
+			id     string
+			source string
+			round  int64
+		}{id: ann.ID, source: ann.Source, round: ann.Round}:
+		default:
+		}
+	})
+
+	peerCandidates := livePeerCandidates(os.Getenv("RELAY_LIVE_SOURCE"))
+	if len(peerCandidates) == 0 {
+		t.Skip("could not derive a peer endpoint candidate from RELAY_LIVE_SOURCE")
+	}
+
+	peerURL := peerCandidates[0]
+	assertPeerEndpointHandshake(t, peerURL)
+	if err := peerMgr.Connect(peerURL); err != nil {
+		t.Fatalf("connect peer %s: %v", peerURL, err)
+	}
+
+	// Allow the websocket peer connection to settle before publishing.
+	time.Sleep(2 * time.Second)
+
+	note := nostr.Event{
+		CreatedAt: nostr.Now(),
+		Kind:      1,
+		PubKey:    "live-peer-pubkey",
+		Content:   "live peer propagation smoke test",
+	}
+	if err := note.Sign(nostr.GeneratePrivateKey()); err != nil {
+		t.Fatalf("sign note: %v", err)
+	}
+
+	var sourceURL string
+	var publishErrs []string
+	for _, candidate := range sourceCandidates {
+		if err := tryPublishToRelay(candidate, note); err == nil {
+			sourceURL = candidate
+			break
+		} else {
+			publishErrs = append(publishErrs, fmt.Sprintf("%s: %v", candidate, err))
+		}
+	}
+	if sourceURL == "" {
+		t.Fatalf("unable to publish to any live source candidate: %v; errors: %s", sourceCandidates, strings.Join(publishErrs, " | "))
+	}
+
+	var announce struct {
+		id     string
+		source string
+		round  int64
+	}
+	waitForCondition(t, 30*time.Second, func() bool {
+		select {
+		case announce = <-peerMsgCh:
+			return announce.id == note.ID
+		default:
+			return false
+		}
+	}, func() string {
+		return fmt.Sprintf("waiting for note_announce note=%s peer=%s", note.ID, sourceURL)
+	})
+
+	prop.AddNote(note.ID, announce.source, note.PubKey, announce.round)
+	prop.Tick(announce.round+1, 0.05)
+
+	waitForCondition(t, 10*time.Second, func() bool {
+		_, ok := localStore.Get(note.ID)
+		return ok
+	}, func() string {
+		_, ok := localStore.Get(note.ID)
+		return fmt.Sprintf("local store has note=%v peer=%s", ok, peerURL)
+	})
+
+	fetched, err := requestEventFromRelay(t, localURL, note.ID)
+	if err != nil {
+		t.Fatalf("requestEventFromRelay: %v", err)
+	}
+	if fetched.ID != note.ID {
+		t.Fatalf("fetched ID = %s, want %s", fetched.ID, note.ID)
+	}
+	if fetched.Content != note.Content {
+		t.Fatalf("fetched content = %q, want %q", fetched.Content, note.Content)
+	}
+}
+
+func assertPeerEndpointHandshake(t *testing.T, peerURL string) {
+	t.Helper()
+
+	conn, _, err := dialTestRelayWebsocket(peerURL)
+	if err != nil {
+		t.Fatalf("peer websocket handshake failed for %s: %v", peerURL, err)
+	}
+	defer conn.Close()
+	t.Logf("peer websocket handshake succeeded for %s", peerURL)
+}
+
 func TestPeerEndpointBroadcastsNoteAnnounce(t *testing.T) {
 	peerMgr := p2p.NewPeerManager(nil)
 	server := newPeerServer(peerMgr)
@@ -637,6 +798,29 @@ func liveRelayCandidates(raw string) []string {
 	default:
 		return []string{"wss://" + raw, "ws://" + raw}
 	}
+}
+
+func livePeerCandidates(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+
+	normalized := normalizeLiveRelayURL(raw)
+	u, err := url.Parse(normalized)
+	if err != nil {
+		return nil
+	}
+	host := u.Hostname()
+	if host == "" {
+		return nil
+	}
+
+	candidates := []string{
+		"wss://" + net.JoinHostPort(host, "8443"),
+		"ws://" + net.JoinHostPort(host, "8443"),
+	}
+	return candidates
 }
 
 func tryPublishToRelay(url string, event nostr.Event) error {
