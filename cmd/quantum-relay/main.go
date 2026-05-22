@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -262,8 +264,8 @@ func newPeerServer(cfg *Config, pm *p2p.PeerManager) http.Handler {
 			return
 		}
 
-		log.Printf("accepted peer websocket url=%s", peerConnectionURL(req))
-		peerURL := peerConnectionURL(req)
+		peerURL := peerConnectionURL(req, cfg)
+		log.Printf("accepted peer websocket url=%s", peerURL)
 		if !inboundPeerAllowed(cfg, peerURL) {
 			log.Printf("rejected inbound peer url=%s trust_enabled=%v peers=%d", peerURL, cfg != nil && cfg.Trust.Enabled, len(cfgPeers(cfg)))
 			_ = conn.Close()
@@ -324,12 +326,22 @@ func servePeerEndpoint(ctx context.Context, handler http.Handler, listen string)
 	}
 }
 
-func peerConnectionURL(req *http.Request) string {
+func peerConnectionURL(req *http.Request, cfg *Config) string {
 	scheme := "ws"
 	if proto := strings.ToLower(req.Header.Get("X-Forwarded-Proto")); proto == "https" || proto == "wss" {
 		scheme = "wss"
 	}
-	host := req.Host
+
+	host := strings.TrimSpace(req.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = req.Host
+	}
+	if host != "" {
+		if _, _, err := net.SplitHostPort(host); err != nil && cfg != nil && cfg.Peer.PublicPort > 0 {
+			host = net.JoinHostPort(host, strconv.Itoa(cfg.Peer.PublicPort))
+		}
+	}
+
 	path := strings.TrimSuffix(req.URL.Path, "/")
 	if path == "" || path == "/" {
 		return fmt.Sprintf("%s://%s", scheme, host)
