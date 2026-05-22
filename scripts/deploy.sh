@@ -773,6 +773,7 @@ EOF
 
 write_caddy_config() {
 	local domain="$1"
+	local listen="$2"
 	local snippet_dir snippet_file import_line
 	snippet_dir="$(caddy_snippet_dir)"
 	snippet_file="$(caddy_snippet_file)"
@@ -785,7 +786,7 @@ write_caddy_config() {
 ${MANAGED_MARKER}
 ${domain} {
 	encode zstd gzip
-	reverse_proxy 127.0.0.1:8080
+	reverse_proxy ${listen}
 }
 EOF
 	write_managed_file "$snippet_file" "$tmp"
@@ -817,6 +818,7 @@ EOF
 
 write_nginx_config() {
 	local domain="$1"
+	local listen="$2"
 	log "configuring nginx for ${domain}"
 	run_root install -d -m 0755 "$NGINX_SITE_DIR"
 	run_root install -d -m 0755 "$NGINX_ENABLED_DIR"
@@ -829,7 +831,7 @@ server {
 	server_name ${domain};
 
 	location / {
-		proxy_pass http://127.0.0.1:8080;
+		proxy_pass http://${listen};
 		proxy_http_version 1.1;
 		proxy_set_header Upgrade \$http_upgrade;
 		proxy_set_header Connection "upgrade";
@@ -863,6 +865,7 @@ EOF
 
 configure_proxy() {
 	local mode="$1"
+	local listen="$2"
 	if [[ "$mode" == "none" ]]; then
 		warn "no reverse proxy detected or requested; skipping proxy setup"
 		return
@@ -872,8 +875,8 @@ configure_proxy() {
 		return
 	fi
 	case "$mode" in
-		caddy) write_caddy_config "$DOMAIN" ;;
-		nginx) write_nginx_config "$DOMAIN" ;;
+		caddy) write_caddy_config "$DOMAIN" "$listen" ;;
+		nginx) write_nginx_config "$DOMAIN" "$listen" ;;
 		*) die "unknown proxy mode: ${mode}" ;;
 	esac
 }
@@ -964,7 +967,7 @@ install_action() {
 	build_binary
 	write_config
 	write_service
-	configure_proxy "$PROXY_MODE"
+	configure_proxy "$PROXY_MODE" "$(parse_listen_from_config)"
 	restart_service
 	wait_for_relay "$(parse_listen_from_config)"
 	if [[ "$PROXY_MODE" != "none" ]]; then
