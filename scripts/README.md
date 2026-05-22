@@ -20,6 +20,7 @@ It uses the current git checkout as its source tree and pulls from `origin` duri
 - If an install or update fails after making managed changes, the script restores backed-up files where possible and removes files it created in that run.
 - The relay smoke test requests NIP-11 with `Accept: application/nostr+json`; plain GETs are expected to return `400` by the relay and are not used as readiness checks.
 - When Caddy is detected, the installer also probes the public websocket endpoint over `wss://` using a real websocket upgrade handshake. Nginx is probed over `ws://` because the generated site config is HTTP-only unless you add TLS separately.
+- Before starting the service, the installer stops any existing `quantum-relay` unit and checks whether the listen port is already occupied by another process. If the port is busy, it exits with a diagnostic instead of looping on restart failures.
 
 ## Examples
 

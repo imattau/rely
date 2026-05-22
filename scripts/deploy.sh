@@ -241,6 +241,27 @@ proxy_smoke_test() {
 	esac
 }
 
+check_listen_port_free() {
+	local listen="$1"
+	local port
+	port="${listen##*:}"
+	if [[ "$port" == "$listen" ]]; then
+		warn "unable to parse listen port from ${listen}; skipping pre-start port check"
+		return 0
+	fi
+
+	if ! command -v ss >/dev/null 2>&1; then
+		warn "ss not available; skipping pre-start port check for ${listen}"
+		return 0
+	fi
+
+	if ss -H -ltn "sport = :${port}" | grep -q .; then
+		warn "port ${port} is already in use before starting ${SERVICE_NAME}"
+		ss -H -ltnp "sport = :${port}" || true
+		die "listen address ${listen} is occupied; stop the other process or set RELY_LISTEN to a free port"
+	fi
+}
+
 probe_websocket_proxy() {
 	local domain="$1"
 	local port="$2"
@@ -268,6 +289,7 @@ require_root_tools() {
 	command -v git >/dev/null 2>&1 || die "git is required"
 	command -v curl >/dev/null 2>&1 || die "curl is required"
 	command -v openssl >/dev/null 2>&1 || warn "openssl is not installed; websocket proxy smoke tests will be skipped"
+	command -v ss >/dev/null 2>&1 || warn "ss is not installed; port conflict diagnostics will be limited"
 	command -v systemctl >/dev/null 2>&1 || die "systemctl is required"
 	command -v install >/dev/null 2>&1 || die "install is required"
 	detect_go_binary
@@ -741,8 +763,9 @@ parse_listen_from_config() {
 
 restart_service() {
 	run_root systemctl daemon-reload
+	run_root systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+	check_listen_port_free "$(parse_listen_from_config)"
 	run_root systemctl enable --now "$SERVICE_NAME"
-	run_root systemctl restart "$SERVICE_NAME"
 }
 
 install_action() {
