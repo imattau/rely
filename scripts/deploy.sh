@@ -218,12 +218,56 @@ proxy_smoke_test() {
 	fi
 
 	log "probing ${mode} proxy for ${domain}"
-	curl -fsS --noproxy '*' --max-time 10 --resolve "${domain}:80:127.0.0.1" "http://${domain}/" >/dev/null
+	case "$mode" in
+		caddy)
+			curl -fsS --noproxy '*' --max-time 20 -L -k \
+				--resolve "${domain}:80:127.0.0.1" \
+				--resolve "${domain}:443:127.0.0.1" \
+				-H 'Accept: application/nostr+json' \
+				"https://${domain}/" >/dev/null
+			probe_websocket_proxy "$domain" "443" "wss"
+			;;
+		nginx)
+			curl -fsS --noproxy '*' --max-time 10 \
+				--resolve "${domain}:80:127.0.0.1" \
+				-H 'Accept: application/nostr+json' \
+				"http://${domain}/" >/dev/null
+			probe_websocket_proxy "$domain" "80" "ws"
+			;;
+		*)
+			warn "unknown proxy mode ${mode}; skipping proxy smoke test"
+			return 0
+			;;
+	esac
+}
+
+probe_websocket_proxy() {
+	local domain="$1"
+	local port="$2"
+	local scheme="$3"
+	local response
+	local key="dGhlIHNhbXBsZSBub25jZQ=="
+
+	if ! command -v openssl >/dev/null 2>&1; then
+		warn "openssl not found; skipping ${scheme} websocket smoke test for ${domain}"
+		return 0
+	fi
+
+	response="$(
+		printf 'GET / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n' "$domain" "$key" |
+			openssl s_client -connect "${domain}:${port}" -servername "$domain" -quiet 2>/dev/null |
+			head -n 20
+	)"
+
+	if ! grep -q "101 Switching Protocols" <<<"$response"; then
+		die "${scheme} websocket probe failed for ${domain}:${port}"
+	fi
 }
 
 require_root_tools() {
 	command -v git >/dev/null 2>&1 || die "git is required"
 	command -v curl >/dev/null 2>&1 || die "curl is required"
+	command -v openssl >/dev/null 2>&1 || warn "openssl is not installed; websocket proxy smoke tests will be skipped"
 	command -v systemctl >/dev/null 2>&1 || die "systemctl is required"
 	command -v install >/dev/null 2>&1 || die "install is required"
 	detect_go_binary
@@ -657,12 +701,17 @@ wait_for_relay() {
 	url="http://${host}:${port}/"
 
 	for i in $(seq 1 30); do
-		if curl -fsS --max-time 5 "$url" >/dev/null 2>&1; then
+		if curl -fsS --max-time 5 -H 'Accept: application/nostr+json' "$url" >/dev/null 2>&1; then
 			log "relay responded on ${url}"
 			return 0
 		fi
 		sleep 1
 	done
+
+	if command -v systemctl >/dev/null 2>&1; then
+		warn "relay did not respond; checking service status"
+		run_root systemctl --no-pager --full status "$SERVICE_NAME" || true
+	fi
 
 	die "relay did not respond at ${url}"
 }

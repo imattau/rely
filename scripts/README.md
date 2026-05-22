@@ -18,6 +18,8 @@ It uses the current git checkout as its source tree and pulls from `origin` duri
 - Nginx writes a dedicated `quantum-relay.rely.conf` site file in `sites-available` and symlinks it into `sites-enabled`.
 - Existing unmanaged proxy files are never overwritten.
 - If an install or update fails after making managed changes, the script restores backed-up files where possible and removes files it created in that run.
+- The relay smoke test requests NIP-11 with `Accept: application/nostr+json`; plain GETs are expected to return `400` by the relay and are not used as readiness checks.
+- When Caddy is detected, the installer also probes the public websocket endpoint over `wss://` using a real websocket upgrade handshake. Nginx is probed over `ws://` because the generated site config is HTTP-only unless you add TLS separately.
 
 ## Examples
 
