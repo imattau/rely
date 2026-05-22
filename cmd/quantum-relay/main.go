@@ -135,7 +135,7 @@ func main() {
 	}
 	r := rely.NewRelay(relayOpts...)
 	fetcher.relay = r
-	peerServer := newPeerServer(peerMgr)
+	peerServer := newPeerServer(cfg, peerMgr)
 
 	if cfg.Auth.Required {
 		r.On.Connect = func(c rely.Client) {
@@ -246,7 +246,7 @@ func applyNIP09Deletion(store storage.EventStore, event *nostr.Event) {
 	}
 }
 
-func newPeerServer(pm *p2p.PeerManager) http.Handler {
+func newPeerServer(cfg *Config, pm *p2p.PeerManager) http.Handler {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 
 	mux := http.NewServeMux()
@@ -263,9 +263,39 @@ func newPeerServer(pm *p2p.PeerManager) http.Handler {
 		}
 
 		log.Printf("accepted peer websocket url=%s", peerConnectionURL(req))
-		pm.Accept(peerConnectionURL(req), conn)
+		peerURL := peerConnectionURL(req)
+		if !inboundPeerAllowed(cfg, peerURL) {
+			log.Printf("rejected inbound peer url=%s trust_enabled=%v peers=%d", peerURL, cfg != nil && cfg.Trust.Enabled, len(cfgPeers(cfg)))
+			_ = conn.Close()
+			return
+		}
+		pm.Accept(peerURL, conn)
 	})
 	return mux
+}
+
+func inboundPeerAllowed(cfg *Config, peerURL string) bool {
+	if cfg == nil || !cfg.Trust.Enabled {
+		return true
+	}
+	if len(cfg.Trust.Peers) == 0 {
+		return false
+	}
+
+	peerKey := peerConnectionKey(peerURL)
+	for _, allowed := range cfg.Trust.Peers {
+		if peerConnectionKey(allowed) == peerKey {
+			return true
+		}
+	}
+	return false
+}
+
+func cfgPeers(cfg *Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.Trust.Peers
 }
 
 func servePeerEndpoint(ctx context.Context, handler http.Handler, listen string) error {
@@ -305,6 +335,18 @@ func peerConnectionURL(req *http.Request) string {
 		return fmt.Sprintf("%s://%s", scheme, host)
 	}
 	return fmt.Sprintf("%s://%s%s", scheme, host, path)
+}
+
+func peerConnectionKey(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	raw = strings.TrimPrefix(raw, "ws://")
+	raw = strings.TrimPrefix(raw, "wss://")
+	raw = strings.TrimPrefix(raw, "http://")
+	raw = strings.TrimPrefix(raw, "https://")
+	return raw
 }
 
 func applyTrustWeights(peerMgr *p2p.PeerManager, trust TrustConfig) {

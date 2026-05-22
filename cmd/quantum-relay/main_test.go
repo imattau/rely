@@ -47,6 +47,34 @@ func TestConfigFilePathFromEnv(t *testing.T) {
 	}
 }
 
+func TestInboundPeerAllowed(t *testing.T) {
+	t.Run("open mesh allows inbound peers", func(t *testing.T) {
+		cfg := defaultConfig()
+		cfg.Trust.Enabled = false
+		if !inboundPeerAllowed(cfg, "wss://any.example.com") {
+			t.Fatal("expected inbound peer to be allowed when trust is disabled")
+		}
+	})
+
+	t.Run("restricted mesh rejects unknown peers", func(t *testing.T) {
+		cfg := defaultConfig()
+		cfg.Trust.Enabled = true
+		cfg.Trust.Peers = []string{"wss://trusted.example.com"}
+		if inboundPeerAllowed(cfg, "wss://other.example.com") {
+			t.Fatal("expected inbound peer to be rejected when not in trust allowlist")
+		}
+	})
+
+	t.Run("restricted mesh allows configured peers", func(t *testing.T) {
+		cfg := defaultConfig()
+		cfg.Trust.Enabled = true
+		cfg.Trust.Peers = []string{"wss://trusted.example.com"}
+		if !inboundPeerAllowed(cfg, "ws://trusted.example.com") {
+			t.Fatal("expected inbound peer to be allowed when present in trust allowlist")
+		}
+	})
+}
+
 func TestHandlePeerMessageBlockPeer(t *testing.T) {
 	pm := p2p.NewPeerManager(nil)
 
@@ -663,7 +691,7 @@ func assertPeerEndpointHandshake(t *testing.T, peerURL string) {
 
 func TestPeerEndpointBroadcastsNoteAnnounce(t *testing.T) {
 	peerMgr := p2p.NewPeerManager(nil)
-	server := newPeerServer(peerMgr)
+	server := newPeerServer(defaultConfig(), peerMgr)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -709,6 +737,99 @@ func TestPeerEndpointBroadcastsNoteAnnounce(t *testing.T) {
 	if env.Type != "note_announce" {
 		t.Fatalf("unexpected envelope type %q", env.Type)
 	}
+}
+
+func TestPeerEndpointTrustGating(t *testing.T) {
+	t.Run("accepts allowlisted inbound peers", func(t *testing.T) {
+		peerMgr := p2p.NewPeerManager(nil)
+		cfg := defaultConfig()
+		cfg.Trust.Enabled = true
+
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen peer endpoint: %v", err)
+		}
+		defer ln.Close()
+
+		allowedPeerURL := "wss://" + ln.Addr().String()
+		cfg.Trust.Peers = []string{allowedPeerURL}
+
+		server := newPeerServer(cfg, peerMgr)
+		srv := &http.Server{Handler: server}
+		go func() { _ = srv.Serve(ln) }()
+		defer func() { _ = srv.Close() }()
+
+		conn, _, err := websocket.DefaultDialer.Dial("ws://"+ln.Addr().String(), nil)
+		if err != nil {
+			t.Fatalf("dial peer endpoint: %v", err)
+		}
+		defer conn.Close()
+
+		waitForCondition(t, 2*time.Second, func() bool {
+			return len(peerMgr.Peers()) == 1
+		}, func() string {
+			return fmt.Sprintf("waiting for allowlisted peer registration, peers=%v", peerMgr.Peers())
+		})
+
+		peerMgr.Broadcast("note_announce", map[string]any{
+			"id":     "allowlisted",
+			"source": "wss://source.example.com",
+			"pubkey": "pubkey",
+			"round":  11,
+		})
+
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read broadcast: %v", err)
+		}
+
+		var env struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(msg, &env); err != nil {
+			t.Fatalf("unmarshal envelope: %v", err)
+		}
+		if env.Type != "note_announce" {
+			t.Fatalf("unexpected envelope type %q", env.Type)
+		}
+	})
+
+	t.Run("rejects non-allowlisted inbound peers", func(t *testing.T) {
+		peerMgr := p2p.NewPeerManager(nil)
+		cfg := defaultConfig()
+		cfg.Trust.Enabled = true
+		cfg.Trust.Peers = []string{"wss://other.example.com"}
+
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen peer endpoint: %v", err)
+		}
+		defer ln.Close()
+
+		server := newPeerServer(cfg, peerMgr)
+		srv := &http.Server{Handler: server}
+		go func() { _ = srv.Serve(ln) }()
+		defer func() { _ = srv.Close() }()
+
+		conn, _, err := websocket.DefaultDialer.Dial("ws://"+ln.Addr().String(), nil)
+		if err != nil {
+			t.Fatalf("dial peer endpoint: %v", err)
+		}
+		defer conn.Close()
+
+		waitForCondition(t, 2*time.Second, func() bool {
+			return len(peerMgr.Peers()) == 0
+		}, func() string {
+			return fmt.Sprintf("waiting for rejected peer to stay unregistered, peers=%v", peerMgr.Peers())
+		})
+
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, _, err = conn.ReadMessage()
+		if err == nil {
+			t.Fatal("expected rejected inbound peer connection to close")
+		}
+	})
 }
 
 func publishToRelay(t *testing.T, url string, event nostr.Event) {
