@@ -29,6 +29,16 @@ func localRelayURL(listen string) string {
 	return "ws://" + listen
 }
 
+func relayPublicURL(cfg *Config) string {
+	if cfg != nil && cfg.Relay.PublicURL != "" {
+		return cfg.Relay.PublicURL
+	}
+	if cfg == nil {
+		return ""
+	}
+	return localRelayURL(cfg.Relay.Listen)
+}
+
 func defaultConfig() *Config {
 	return &Config{
 		Relay: RelayConfig{
@@ -80,7 +90,7 @@ func main() {
 	}()
 	spamDetector := spam.NewRateLimiter(cfg.Spam.ClientEventsPerSec, cfg.Spam.PeerAnnouncePerSec)
 
-	relayURL := localRelayURL(cfg.Relay.Listen)
+	relayURL := relayPublicURL(cfg)
 
 	graph := quantum.NewGraphState()
 	graph.SetRelays(append([]string{relayURL}, cfg.Peers...))

@@ -527,11 +527,6 @@ func TestQuantumRelayLiveSourcePeerPropagation(t *testing.T) {
 	go func() { _ = (&http.Server{Handler: localRelay}).Serve(localLn) }()
 
 	localURL := "ws://" + localLn.Addr().String()
-	peerMsgCh := make(chan struct {
-		id     string
-		source string
-		round  int64
-	}, 1)
 
 	diffuser := consensus.NewDiffuser(nil, nil)
 	graph := quantum.NewGraphState()
@@ -541,30 +536,6 @@ func TestQuantumRelayLiveSourcePeerPropagation(t *testing.T) {
 	graph.Recompute()
 	prop := quantum.NewPropagator(graph, graph.GetRelayIndex(localURL), 0.05, fetcher.Fetch)
 
-	var peerMgr *p2p.PeerManager
-	peerMgr = p2p.NewPeerManager(func(peerURL, msgType string, payload json.RawMessage) {
-		handlePeerMessage(&Config{}, peerMgr, diffuser, prop, peerURL, msgType, payload)
-		if msgType != "note_announce" {
-			return
-		}
-		var ann struct {
-			ID     string `json:"id"`
-			Source string `json:"source"`
-			Round  int64  `json:"round"`
-		}
-		if err := json.Unmarshal(payload, &ann); err != nil {
-			return
-		}
-		select {
-		case peerMsgCh <- struct {
-			id     string
-			source string
-			round  int64
-		}{id: ann.ID, source: ann.Source, round: ann.Round}:
-		default:
-		}
-	})
-
 	peerCandidates := livePeerCandidates(os.Getenv("RELAY_LIVE_SOURCE"))
 	if len(peerCandidates) == 0 {
 		t.Skip("could not derive a peer endpoint candidate from RELAY_LIVE_SOURCE")
@@ -572,9 +543,35 @@ func TestQuantumRelayLiveSourcePeerPropagation(t *testing.T) {
 
 	peerURL := peerCandidates[0]
 	assertPeerEndpointHandshake(t, peerURL)
-	if err := peerMgr.Connect(peerURL); err != nil {
-		t.Fatalf("connect peer %s: %v", peerURL, err)
+	peerConn, _, err := dialTestRelayWebsocket(peerURL)
+	if err != nil {
+		t.Fatalf("dial peer %s: %v", peerURL, err)
 	}
+	defer peerConn.Close()
+	peerFrames := make(chan p2p.Envelope, 16)
+	peerErr := make(chan error, 1)
+	go func() {
+		for {
+			_ = peerConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			_, msg, err := peerConn.ReadMessage()
+			if err != nil {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					continue
+				}
+				peerErr <- err
+				return
+			}
+
+			var env p2p.Envelope
+			if err := json.Unmarshal(msg, &env); err != nil {
+				continue
+			}
+			select {
+			case peerFrames <- env:
+			default:
+			}
+		}
+	}()
 
 	// Allow the websocket peer connection to settle before publishing.
 	time.Sleep(2 * time.Second)
@@ -604,14 +601,25 @@ func TestQuantumRelayLiveSourcePeerPropagation(t *testing.T) {
 	}
 
 	var announce struct {
-		id     string
-		source string
-		round  int64
+		ID     string `json:"id"`
+		Source string `json:"source"`
+		Round  int64  `json:"round"`
 	}
 	waitForCondition(t, 30*time.Second, func() bool {
 		select {
-		case announce = <-peerMsgCh:
-			return announce.id == note.ID
+		case err := <-peerErr:
+			t.Fatalf("read peer envelope: %v", err)
+			return false
+		case env := <-peerFrames:
+			t.Logf("peer envelope type=%s", env.Type)
+			if env.Type != "note_announce" {
+				return false
+			}
+			if err := json.Unmarshal(env.Payload, &announce); err != nil {
+				t.Fatalf("unmarshal announce payload: %v", err)
+				return false
+			}
+			return announce.ID == note.ID
 		default:
 			return false
 		}
@@ -619,8 +627,8 @@ func TestQuantumRelayLiveSourcePeerPropagation(t *testing.T) {
 		return fmt.Sprintf("waiting for note_announce note=%s peer=%s", note.ID, sourceURL)
 	})
 
-	prop.AddNote(note.ID, announce.source, note.PubKey, announce.round)
-	prop.Tick(announce.round+1, 0.05)
+	prop.AddNote(note.ID, announce.Source, note.PubKey, announce.Round)
+	prop.Tick(announce.Round+1, 0.05)
 
 	waitForCondition(t, 10*time.Second, func() bool {
 		_, ok := localStore.Get(note.ID)
@@ -672,6 +680,12 @@ func TestPeerEndpointBroadcastsNoteAnnounce(t *testing.T) {
 		t.Fatalf("dial peer endpoint: %v", err)
 	}
 	defer conn.Close()
+
+	waitForCondition(t, 2*time.Second, func() bool {
+		return len(peerMgr.Peers()) == 1
+	}, func() string {
+		return fmt.Sprintf("waiting for peer registration, peers=%v", peerMgr.Peers())
+	})
 
 	peerMgr.Broadcast("note_announce", map[string]any{
 		"id":     "abc",

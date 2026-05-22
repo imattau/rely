@@ -628,6 +628,19 @@ choose_listen() {
 	printf '%s' "$DEFAULT_PROXY_LISTEN"
 }
 
+choose_public_url() {
+	if [[ -z "$DOMAIN" ]]; then
+		printf '%s' ""
+		return
+	fi
+	case "$PROXY_MODE" in
+		caddy) printf 'wss://%s' "$DOMAIN" ;;
+		nginx) printf 'ws://%s' "$DOMAIN" ;;
+		none) printf '%s' "" ;;
+		*) printf 'wss://%s' "$DOMAIN" ;;
+	esac
+}
+
 detect_proxy_mode() {
 	if [[ "$PROXY_MODE" != "auto" ]]; then
 		printf '%s' "$PROXY_MODE"
@@ -681,12 +694,15 @@ write_config() {
 
 	local listen
 	listen="$(choose_listen)"
+	local public_url
+	public_url="$(choose_public_url)"
 	log "writing config to ${CONFIG_FILE}"
 	local tmp
 	tmp="$(mktemp)"
 	cat >"$tmp" <<EOF
 relay:
   listen: "${listen}"
+  public_url: "${public_url}"
   name: "${RELAY_NAME}"
   description: "${RELAY_DESCRIPTION}"
 
@@ -990,6 +1006,80 @@ parse_listen_from_config() {
 	printf '%s' "$listen"
 }
 
+parse_public_url_from_config() {
+	if [[ ! -f "$CONFIG_FILE" ]]; then
+		printf '%s' ""
+		return
+	fi
+	local public_url
+	public_url="$(awk '
+		/^[[:space:]]*relay:[[:space:]]*$/ { in_relay=1; next }
+		in_relay && /^[[:space:]]*public_url:[[:space:]]*/ {
+			sub(/^[[:space:]]*public_url:[[:space:]]*/, "", $0)
+			gsub(/"/, "", $0)
+			gsub(/\047/, "", $0)
+			print $0
+			exit
+		}
+	' "$CONFIG_FILE")"
+	printf '%s' "${public_url:-}"
+}
+
+update_config_public_url() {
+	local public_url="$1"
+	local current
+	if [[ ! -f "$CONFIG_FILE" ]]; then
+		return 0
+	fi
+	current="$(parse_public_url_from_config)"
+	if [[ "$current" == "$public_url" ]]; then
+		return 0
+	fi
+
+	log "updating relay public_url in existing config from ${current:-<empty>} to ${public_url:-<empty>}"
+	local tmp backup_dir backup_file
+	tmp="$(mktemp)"
+	backup_dir="$(mktemp -d)"
+	TEMP_DIRS+=("$backup_dir")
+	backup_file="${backup_dir}/$(basename "$CONFIG_FILE").bak"
+	run_root cp -a "$CONFIG_FILE" "$backup_file"
+	BACKUPS["$CONFIG_FILE"]="$backup_file"
+
+	awk -v new_public_url="$public_url" '
+		BEGIN {
+			in_relay = 0
+			replaced = 0
+		}
+		/^[[:space:]]*relay:[[:space:]]*$/ {
+			print
+			in_relay = 1
+			next
+		}
+		in_relay && /^[[:space:]]*public_url:[[:space:]]*/ && !replaced {
+			printf "  public_url: \"%s\"\n", new_public_url
+			replaced = 1
+			next
+		}
+		in_relay && /^[^[:space:]]/ {
+			if (!replaced) {
+				printf "  public_url: \"%s\"\n", new_public_url
+				replaced = 1
+			}
+			in_relay = 0
+		}
+		{
+			print
+		}
+		END {
+			if (in_relay && !replaced) {
+				printf "  public_url: \"%s\"\n", new_public_url
+			}
+		}
+	' "$CONFIG_FILE" >"$tmp"
+	run_root install -m 0644 "$tmp" "$CONFIG_FILE"
+	rm -f "$tmp"
+}
+
 parse_peer_listen_from_config() {
 	if [[ ! -f "$CONFIG_FILE" ]]; then
 		printf '%s' "$DEFAULT_PEER_LISTEN"
@@ -1057,6 +1147,9 @@ install_action() {
 	run_root systemctl stop "$SERVICE_NAME" 2>/dev/null || true
 	LISTEN_OVERRIDE="$(pick_free_listen "$(choose_listen)")"
 	ensure_directories
+	if [[ -n "$DOMAIN" ]]; then
+		update_config_public_url "$(choose_public_url)"
+	fi
 	update_config_listen "$LISTEN_OVERRIDE"
 	if [[ "$RELAY_NAME_FLAG_SET" == false && "$RELAY_NAME_ENV_SET" == false ]]; then
 		prompt_required RELAY_NAME "Relay name" "$RELAY_NAME"
@@ -1091,6 +1184,9 @@ update_action() {
 	fi
 	ensure_sudo
 	update_source
+	if [[ -n "$DOMAIN" ]]; then
+		update_config_public_url "$(choose_public_url)"
+	fi
 	build_binary
 	if [[ ! -f "$CONFIG_FILE" ]]; then
 		warn "config file missing; run install to create ${CONFIG_FILE}"

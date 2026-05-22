@@ -21,6 +21,7 @@ type Config struct {
 
 type RelayConfig struct {
 	Listen      string `yaml:"listen"`
+	PublicURL   string `yaml:"public_url"`
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`
 }
@@ -134,6 +135,8 @@ func parseConfig(content string, cfg *Config) error {
 			switch key {
 			case "listen":
 				cfg.Relay.Listen = value
+			case "public_url":
+				cfg.Relay.PublicURL = value
 			case "name":
 				cfg.Relay.Name = value
 			case "description":

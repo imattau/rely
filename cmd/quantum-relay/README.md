@@ -182,6 +182,7 @@ Key observations:
 ```yaml
 relay:
   listen: ":8080"
+  public_url: "wss://relay.example.com"
   name: "My Quantum Relay"
   description: "Nostr relay with quantum walk propagation"
 
@@ -223,6 +224,7 @@ By default the binary reads `configs/config.yaml` relative to its working direct
 
 | Parameter | Effect |
 |---|---|
+| `relay.public_url` | External websocket URL advertised to peers in `note_announce` and used as the fetch source. Leave empty to fall back to the local listen address. |
 | `gamma` | Higher = faster damping of negative-reputation pubkeys. 0 disables damping. |
 | `fetch_threshold` | Lower = fetch more aggressively. 0 fetches everything. |
 | `consensus_tick_ms` | Faster = quicker reputation convergence; more network traffic. |

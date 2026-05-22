@@ -1,5 +1,6 @@
 relay:
   listen: ":8080"
+  public_url: ""
   name: "Quantum Relay"
   description: "Nostr relay with quantum walk propagation"
 

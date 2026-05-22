@@ -111,6 +111,9 @@ func (pm *PeerManager) Broadcast(msgType string, payload interface{}) {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
 
+	if msgType == "note_announce" {
+		log.Printf("p2p: broadcasting note_announce to %d peers", len(pm.peers))
+	}
 	for _, p := range pm.peers {
 		select {
 		case p.send <- env:
@@ -308,7 +311,14 @@ func (pm *PeerManager) writeLoop(p *peer, conn *websocket.Conn, stop <-chan stru
 		select {
 		case msg := <-p.send:
 			_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if len(msg) > 0 {
+				var env Envelope
+				if err := json.Unmarshal(msg, &env); err == nil && env.Type == "note_announce" {
+					log.Printf("p2p: writing note_announce peer=%s", p.url)
+				}
+			}
 			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				log.Printf("p2p: write failed peer=%s: %v", p.url, err)
 				return
 			}
 		case <-ticker.C:

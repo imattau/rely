@@ -9,6 +9,7 @@ func TestLoadConfig(t *testing.T) {
 	content := `
 relay:
   listen: ":9999"
+  public_url: "wss://relay.example.com"
   name: "Test"
 peer:
   listen: ":9001"
@@ -46,6 +47,9 @@ peers:
 	}
 	if cfg.Relay.Listen != ":9999" {
 		t.Errorf("Listen = %q, want :9999", cfg.Relay.Listen)
+	}
+	if cfg.Relay.PublicURL != "wss://relay.example.com" {
+		t.Errorf("PublicURL = %q, want wss://relay.example.com", cfg.Relay.PublicURL)
 	}
 	if cfg.Peer.Listen != ":9001" {
 		t.Errorf("Peer.Listen = %q, want :9001", cfg.Peer.Listen)
