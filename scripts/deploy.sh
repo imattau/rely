@@ -36,7 +36,15 @@ MANAGED_MARKER="# managed by rely"
 ACTION="install"
 PROXY_MODE="${RELY_PROXY:-auto}"
 DOMAIN="${RELY_DOMAIN:-}"
+RELAY_NAME_ENV_SET=false
+if [[ -n ${RELY_NAME+x} ]]; then
+	RELAY_NAME_ENV_SET=true
+fi
 RELAY_NAME="${RELY_NAME:-$DEFAULT_RELAY_NAME}"
+RELAY_DESCRIPTION_ENV_SET=false
+if [[ -n ${RELY_DESCRIPTION+x} ]]; then
+	RELAY_DESCRIPTION_ENV_SET=true
+fi
 RELAY_DESCRIPTION="${RELY_DESCRIPTION:-$DEFAULT_RELAY_DESCRIPTION}"
 LISTEN_OVERRIDE="${RELY_LISTEN:-}"
 NON_INTERACTIVE=false
@@ -47,6 +55,8 @@ declare -A BACKUPS=()
 declare -a CREATED_FILES=()
 IN_ROLLBACK=false
 CURRENT_ACTION=""
+RELAY_NAME_FLAG_SET=false
+RELAY_DESCRIPTION_FLAG_SET=false
 
 log() {
 	printf '[deploy] %s\n' "$*"
@@ -277,8 +287,9 @@ prompt() {
 		else
 			read -r -p "${question} [${default}]: " answer
 		fi
-		answer="${answer:-$default}"
 	fi
+
+	answer="${answer:-$default}"
 
 	printf '%s' "$answer"
 }
@@ -392,7 +403,7 @@ ensure_proxy_domain() {
 		if [[ "$NON_INTERACTIVE" == true || ! -t 0 ]]; then
 			die "a domain is required when configuring a reverse proxy"
 		fi
-		prompt DOMAIN "Reverse proxy hostname" "relay.example.com"
+		DOMAIN="$(prompt "Reverse proxy hostname" "relay.example.com")"
 	fi
 
 	if [[ -z "$DOMAIN" ]]; then
@@ -696,8 +707,12 @@ install_action() {
 		return
 	fi
 	ensure_sudo
-	prompt_required RELAY_NAME "Relay name" "$RELAY_NAME"
-	prompt_required RELAY_DESCRIPTION "Relay description" "$RELAY_DESCRIPTION"
+	if [[ "$RELAY_NAME_FLAG_SET" == false && "$RELAY_NAME_ENV_SET" == false ]]; then
+		prompt_required RELAY_NAME "Relay name" "$RELAY_NAME"
+	fi
+	if [[ "$RELAY_DESCRIPTION_FLAG_SET" == false && "$RELAY_DESCRIPTION_ENV_SET" == false ]]; then
+		prompt_required RELAY_DESCRIPTION "Relay description" "$RELAY_DESCRIPTION"
+	fi
 	ensure_directories
 	ensure_system_user
 	build_binary
@@ -788,17 +803,21 @@ parse_args() {
 				shift
 				[[ $# -gt 0 ]] || die "--name requires a value"
 				RELAY_NAME="$1"
+				RELAY_NAME_FLAG_SET=true
 				;;
 			--name=*)
 				RELAY_NAME="${1#*=}"
+				RELAY_NAME_FLAG_SET=true
 				;;
 			--description)
 				shift
 				[[ $# -gt 0 ]] || die "--description requires a value"
 				RELAY_DESCRIPTION="$1"
+				RELAY_DESCRIPTION_FLAG_SET=true
 				;;
 			--description=*)
 				RELAY_DESCRIPTION="${1#*=}"
+				RELAY_DESCRIPTION_FLAG_SET=true
 				;;
 			--non-interactive)
 				NON_INTERACTIVE=true
