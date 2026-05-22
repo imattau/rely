@@ -262,9 +262,8 @@ run_root() {
 }
 
 prompt() {
-	local __var="$1"
-	local question="$2"
-	local default="$3"
+	local question="$1"
+	local default="$2"
 	local answer=""
 
 	if [[ "$NON_INTERACTIVE" == true || ! -t 0 ]]; then
@@ -281,7 +280,7 @@ prompt() {
 		answer="${answer:-$default}"
 	fi
 
-	printf -v "${__var}" '%s' "$answer"
+	printf '%s' "$answer"
 }
 
 prompt_required() {
@@ -291,7 +290,7 @@ prompt_required() {
 	local answer=""
 
 	while :; do
-		prompt answer "$question" "$default"
+		answer="$(prompt "$question" "$default")"
 		if [[ -n "$answer" ]]; then
 			break
 		fi
