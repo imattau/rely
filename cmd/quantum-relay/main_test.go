@@ -528,6 +528,7 @@ func TestQuantumRelayLiveSourcePeerPropagation(t *testing.T) {
 		t.Skip("set RELAY_LIVE_SOURCE to a real relay URL or domain to run the live peer propagation smoke test")
 	}
 
+	cfg := defaultConfig()
 	localStore := storage.NewStore()
 	localRelay := rely.NewRelay()
 	localRelay.Reject.Connection.Clear()
@@ -558,7 +559,7 @@ func TestQuantumRelayLiveSourcePeerPropagation(t *testing.T) {
 
 	diffuser := consensus.NewDiffuser(nil, nil)
 	graph := quantum.NewGraphState()
-	fetcher := newQuantumFetcher(localURL, localStore, diffuser, TrustConfig{}, 32)
+	fetcher := newQuantumFetcher(localURL, localStore, diffuser, cfg.Trust, 32)
 	fetcher.relay = localRelay
 	graph.SetRelays([]string{localURL})
 	graph.Recompute()
@@ -570,51 +571,55 @@ func TestQuantumRelayLiveSourcePeerPropagation(t *testing.T) {
 	}
 
 	peerURL := peerCandidates[0]
-	peerConn, _, err := dialTestRelayWebsocket(peerURL)
-	if err != nil {
-		t.Fatalf("dial peer %s: %v", peerURL, err)
-	}
-	defer peerConn.Close()
-	peerFrames := make(chan p2p.Envelope, 16)
-	peerErr := make(chan error, 1)
-	go func() {
-		for {
-			_ = peerConn.SetReadDeadline(time.Now().Add(5 * time.Second))
-			_, msg, err := peerConn.ReadMessage()
-			if err != nil {
-				if ne, ok := err.(net.Error); ok && ne.Timeout() {
-					continue
-				}
-				peerErr <- err
-				return
-			}
-
-			var env p2p.Envelope
-			if err := json.Unmarshal(msg, &env); err != nil {
-				continue
-			}
+	peerReady := make(chan struct{}, 1)
+	announceSeen := make(chan struct{}, 1)
+	var peerMgr *p2p.PeerManager
+	peerMgr = p2p.NewPeerManager(func(peerURL, msgType string, payload json.RawMessage) {
+		switch msgType {
+		case "hello":
 			select {
-			case peerFrames <- env:
+			case peerReady <- struct{}{}:
+			default:
+			}
+			return
+		case "note_announce":
+			select {
+			case announceSeen <- struct{}{}:
 			default:
 			}
 		}
-	}()
 
-	// Wait for the peer server hello frame confirming we are connected to the
-	// peer endpoint (not the main relay) and that our session is registered.
+		handlePeerMessage(cfg, peerMgr, diffuser, prop, peerURL, msgType, payload)
+	})
+	peerMgr.Connect(peerURL)
+	defer peerMgr.Disconnect(peerURL)
+
 	waitForCondition(t, 10*time.Second, func() bool {
 		select {
-		case err := <-peerErr:
-			t.Fatalf("peer connection error waiting for hello: %v", err)
-			return false
-		case env := <-peerFrames:
-			return env.Type == "hello"
+		case <-peerReady:
+			return true
 		default:
 			return false
 		}
 	}, func() string {
 		return fmt.Sprintf("waiting for peer hello from %s (wrong endpoint or peer server not running?)", peerURL)
 	})
+
+	done := make(chan struct{})
+	defer close(done)
+	go diffuser.Run(250*time.Millisecond, done)
+	go func() {
+		ticker := time.NewTicker(250 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				prop.Tick(diffuser.GetRound(), 0.05)
+			}
+		}
+	}()
 
 	note := nostr.Event{
 		CreatedAt: nostr.Now(),
@@ -640,35 +645,16 @@ func TestQuantumRelayLiveSourcePeerPropagation(t *testing.T) {
 		t.Fatalf("unable to publish to any live source candidate: %v; errors: %s", sourceCandidates, strings.Join(publishErrs, " | "))
 	}
 
-	var announce struct {
-		ID     string `json:"id"`
-		Source string `json:"source"`
-		Round  int64  `json:"round"`
-	}
 	waitForCondition(t, 30*time.Second, func() bool {
 		select {
-		case err := <-peerErr:
-			t.Fatalf("read peer envelope: %v", err)
-			return false
-		case env := <-peerFrames:
-			t.Logf("peer envelope type=%s", env.Type)
-			if env.Type != "note_announce" {
-				return false
-			}
-			if err := json.Unmarshal(env.Payload, &announce); err != nil {
-				t.Fatalf("unmarshal announce payload: %v", err)
-				return false
-			}
-			return announce.ID == note.ID
+		case <-announceSeen:
+			return true
 		default:
 			return false
 		}
 	}, func() string {
 		return fmt.Sprintf("waiting for note_announce note=%s peer=%s", note.ID, sourceURL)
 	})
-
-	prop.AddNote(note.ID, announce.Source, note.PubKey, announce.Round)
-	prop.Tick(announce.Round+1, 0.05)
 
 	waitForCondition(t, 10*time.Second, func() bool {
 		_, ok := localStore.Get(note.ID)
