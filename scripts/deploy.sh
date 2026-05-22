@@ -225,6 +225,20 @@ detect_existing_proxy_config() {
 	return 1
 }
 
+# If DOMAIN is not set, try to derive it from the existing proxy config so
+# that write_config can populate public_url correctly on updates.
+resolve_domain_from_proxy() {
+	if [[ -n "$DOMAIN" ]]; then
+		return 0
+	fi
+	if detect_existing_proxy_config; then
+		if [[ -n "$PROXY_SMOKE_DOMAIN" ]]; then
+			DOMAIN="$PROXY_SMOKE_DOMAIN"
+			PROXY_MODE="$PROXY_SMOKE_MODE"
+		fi
+	fi
+}
+
 caddy_snippet_dir() {
 	if [[ -n "${RELY_CADDY_SNIPPET_DIR:-}" ]]; then
 		printf '%s' "$RELY_CADDY_SNIPPET_DIR"
@@ -1338,6 +1352,7 @@ update_action() {
 	ensure_sudo
 	update_source
 	run_root systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+	resolve_domain_from_proxy
 	RELAY_LISTEN_RESOLVED="$(pick_free_listen "$(parse_listen_from_config)")"
 	PEER_LISTEN_RESOLVED="$(pick_free_listen "$(parse_peer_listen_from_config)" "$RELAY_LISTEN_RESOLVED")"
 	if [[ -n "$DOMAIN" ]]; then
