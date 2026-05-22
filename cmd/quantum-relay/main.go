@@ -57,7 +57,7 @@ func defaultConfig() *Config {
 }
 
 func main() {
-	cfg, err := LoadConfig("configs/config.yaml")
+	cfg, err := LoadConfig(configFilePath())
 	if err != nil {
 		log.Printf("config load failed, using defaults: %v", err)
 		cfg = defaultConfig()
@@ -189,6 +189,13 @@ func main() {
 		log.Printf("relay stopped: %v", err)
 		os.Exit(1)
 	}
+}
+
+func configFilePath() string {
+	if path := os.Getenv("RELY_CONFIG"); path != "" {
+		return path
+	}
+	return "configs/config.yaml"
 }
 
 func applyNIP09Deletion(store storage.EventStore, event *nostr.Event) {

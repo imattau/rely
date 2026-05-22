@@ -213,7 +213,7 @@ trust:
     - "ws://relay2.example.com"
 ```
 
-Place the file at `configs/config.yaml` relative to the binary. If the file is missing, all defaults above apply.
+By default the binary reads `configs/config.yaml` relative to its working directory. Set `RELY_CONFIG=/etc/rely/config.yaml` to point the relay at an external config file, which is what the deployment script and systemd service use. If the file is missing, all defaults above apply.
 
 ### Key parameters
 
@@ -242,8 +242,10 @@ go build ./cmd/quantum-relay
 Or with a config file:
 
 ```bash
-./quantum-relay   # reads configs/config.yaml automatically
+RELY_CONFIG=/etc/rely/config.yaml ./quantum-relay
 ```
+
+For a guided install/update flow on Linux hosts, see `scripts/deploy.sh`.
 
 ---
 

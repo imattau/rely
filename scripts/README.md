@@ -1,0 +1,45 @@
+# Deployment Script
+
+`scripts/deploy.sh` installs and updates the relay on Linux hosts with `systemd`.
+It uses the current git checkout as its source tree and pulls from `origin` during updates.
+
+## Supported actions
+
+- `install` builds the relay, installs it to `/usr/local/bin/quantum-relay`, writes `/etc/rely/config.yaml`, creates the `quantum-relay` service, and configures Caddy or Nginx when detected.
+- `update` pulls the latest source from GitHub, rebuilds the binary, restarts the service, and runs a smoke test.
+- `test` checks that the service is active and that the relay responds on its configured listen address.
+- `--dry-run` prints the planned actions without writing files or restarting services.
+
+## Proxy behavior
+
+- Caddy snippets are written to `/etc/caddy/Caddyfile.d/quantum-relay.caddy`.
+- If `/etc/caddy/Caddyfile` already exists and does not import a snippet directory, the script leaves it untouched and prints the import line to add manually.
+- Nginx writes a dedicated `quantum-relay.rely.conf` site file in `sites-available` and symlinks it into `sites-enabled`.
+- Existing unmanaged proxy files are never overwritten.
+- If an install or update fails after making managed changes, the script restores backed-up files where possible and removes files it created in that run.
+
+## Examples
+
+```bash
+./scripts/deploy.sh install --domain relay.example.com
+./scripts/deploy.sh install --proxy nginx --domain relay.example.com
+./scripts/deploy.sh update
+./scripts/deploy.sh test
+./scripts/deploy.sh install --domain relay.example.com --dry-run
+```
+
+## Environment overrides
+
+- `RELY_PROXY=auto|caddy|nginx|none`
+- `RELY_DOMAIN=relay.example.com`
+- `RELY_LISTEN=127.0.0.1:8080`
+- `RELY_NAME="Quantum Relay"`
+- `RELY_DESCRIPTION="Nostr relay with quantum walk propagation"`
+- `GO_BIN=/usr/local/go/bin/go` if Go is not on `PATH`
+- `RELY_DRY_RUN=true`
+
+## Notes
+
+- The script expects Go 1.25 or newer because the module now targets Go 1.25.
+- If a reverse proxy is configured, the relay listens on `127.0.0.1:8080` by default.
+- The relay reads its runtime config from `RELY_CONFIG=/etc/rely/config.yaml` when launched by the service.

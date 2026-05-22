@@ -36,6 +36,13 @@ func TestApplyTrustWeights(t *testing.T) {
 	}
 }
 
+func TestConfigFilePathFromEnv(t *testing.T) {
+	t.Setenv("RELY_CONFIG", "/etc/rely/config.yaml")
+	if got := configFilePath(); got != "/etc/rely/config.yaml" {
+		t.Fatalf("expected env config path, got %q", got)
+	}
+}
+
 func TestHandlePeerMessageBlockPeer(t *testing.T) {
 	pm := p2p.NewPeerManager(nil)
 
