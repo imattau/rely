@@ -80,11 +80,14 @@ func (pm *PeerManager) Accept(url string, conn *websocket.Conn) {
 
 	pm.mu.Lock()
 	pm.peers[url] = p
+	peerCount := len(pm.peers)
 	pm.mu.Unlock()
-	log.Printf("p2p: accepted inbound peer=%s", url)
+	log.Printf("p2p: accepted inbound peer=%s peers=%d", url, peerCount)
 
 	go func() {
+		log.Printf("p2p: serving inbound peer=%s", url)
 		pm.serveSession(p, conn)
+		log.Printf("p2p: inbound session ended peer=%s", url)
 		pm.removePeer(url, p)
 	}()
 }
@@ -182,7 +185,7 @@ func (pm *PeerManager) removePeer(url string, expected *peer) {
 	defer pm.mu.Unlock()
 	if current, ok := pm.peers[url]; ok && current == expected {
 		delete(pm.peers, url)
-		log.Printf("p2p: removed peer=%s", url)
+		log.Printf("p2p: removed peer=%s peers=%d", url, len(pm.peers))
 	}
 }
 
@@ -241,6 +244,7 @@ func (pm *PeerManager) serveSession(p *peer, conn *websocket.Conn) bool {
 	}
 
 	p.setConn(conn)
+	log.Printf("p2p: session started peer=%s", p.url)
 	readSeen := false
 	activity := make(chan struct{}, 1)
 	connStop := make(chan struct{})
@@ -265,10 +269,12 @@ func (pm *PeerManager) serveSession(p *peer, conn *websocket.Conn) bool {
 		select {
 		case <-p.done:
 			stopConn()
+			log.Printf("p2p: session stopped peer=%s read_seen=%v", p.url, readSeen)
 			return readSeen
 		case <-activity:
 			readSeen = true
 		case <-connStop:
+			log.Printf("p2p: session closed peer=%s read_seen=%v", p.url, readSeen)
 			return readSeen
 		}
 	}
