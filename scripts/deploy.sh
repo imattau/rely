@@ -122,6 +122,9 @@ rollback() {
 	trap - ERR
 	log "rolling back partial deployment"
 
+	run_root systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+	run_root systemctl reset-failed "$SERVICE_NAME" 2>/dev/null || true
+
 	local target backup
 	for target in "${!BACKUPS[@]}"; do
 		backup="${BACKUPS[$target]}"
@@ -220,18 +223,38 @@ proxy_smoke_test() {
 	log "probing ${mode} proxy for ${domain}"
 	case "$mode" in
 		caddy)
-			curl -fsS --noproxy '*' --max-time 20 -L -k \
-				--resolve "${domain}:80:127.0.0.1" \
-				--resolve "${domain}:443:127.0.0.1" \
-				-H 'Accept: application/nostr+json' \
-				"https://${domain}/" >/dev/null
+			local ok=false
+			for _ in $(seq 1 30); do
+				if curl -fsS --noproxy '*' --max-time 20 -L -k \
+					--resolve "${domain}:80:127.0.0.1" \
+					--resolve "${domain}:443:127.0.0.1" \
+					-H 'Accept: application/nostr+json' \
+					"https://${domain}/" >/dev/null; then
+					ok=true
+					break
+				fi
+				sleep 2
+			done
+			if [[ "$ok" != true ]]; then
+				die "https proxy probe failed for ${domain}"
+			fi
 			probe_websocket_proxy "$domain" "443" "wss"
 			;;
 		nginx)
-			curl -fsS --noproxy '*' --max-time 10 \
-				--resolve "${domain}:80:127.0.0.1" \
-				-H 'Accept: application/nostr+json' \
-				"http://${domain}/" >/dev/null
+			local ok=false
+			for _ in $(seq 1 15); do
+				if curl -fsS --noproxy '*' --max-time 10 \
+					--resolve "${domain}:80:127.0.0.1" \
+					-H 'Accept: application/nostr+json' \
+					"http://${domain}/" >/dev/null; then
+					ok=true
+					break
+				fi
+				sleep 1
+			done
+			if [[ "$ok" != true ]]; then
+				die "http proxy probe failed for ${domain}"
+			fi
 			probe_websocket_proxy "$domain" "80" "ws"
 			;;
 		*)
