@@ -463,7 +463,7 @@ trust:
   enabled: false
   weight: ${DEFAULT_TRUST_WEIGHT}
   peers: []
-	EOF
+EOF
 	run_root install -m 0644 "$tmp" "$CONFIG_FILE"
 	CREATED_FILES+=("$CONFIG_FILE")
 	rm -f "$tmp"
@@ -523,7 +523,7 @@ ProtectSystem=full
 
 [Install]
 WantedBy=multi-user.target
-	EOF
+EOF
 	if [[ -f "$SERVICE_FILE" ]]; then
 		local backup_dir backup_file
 		backup_dir="$(mktemp -d)"
