@@ -13,7 +13,7 @@ It uses the current git checkout as its source tree and pulls from `origin` duri
 
 ## Proxy behavior
 
-- Caddy snippets are written to `/etc/caddy/Caddyfile.d/quantum-relay.caddy`.
+- Caddy snippets are written to whichever snippet directory the host already imports, preferring `/etc/caddy/conf.d` when that import is present and otherwise using `/etc/caddy/Caddyfile.d`.
 - If `/etc/caddy/Caddyfile` already exists and does not import a snippet directory, the script leaves it untouched and prints the import line to add manually.
 - Nginx writes a dedicated `quantum-relay.rely.conf` site file in `sites-available` and symlinks it into `sites-enabled`.
 - Existing unmanaged proxy files are never overwritten.

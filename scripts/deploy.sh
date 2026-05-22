@@ -11,8 +11,8 @@ CONFIG_FILE="${CONFIG_DIR}/config.yaml"
 DATA_DIR="/var/lib/rely"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 CADDY_MAIN_FILE="/etc/caddy/Caddyfile"
-CADDY_SNIPPET_DIR="/etc/caddy/Caddyfile.d"
-CADDY_SNIPPET_FILE="${CADDY_SNIPPET_DIR}/${SERVICE_NAME}.caddy"
+CADDY_CADDYFILE_D="/etc/caddy/Caddyfile.d"
+CADDY_CONF_D="/etc/caddy/conf.d"
 NGINX_SITE_DIR="/etc/nginx/sites-available"
 NGINX_ENABLED_DIR="/etc/nginx/sites-enabled"
 NGINX_SITE_FILE="${NGINX_SITE_DIR}/${SERVICE_NAME}.rely.conf"
@@ -203,9 +203,11 @@ print_test_plan() {
 }
 
 detect_existing_proxy_config() {
-	if [[ -f "$CADDY_SNIPPET_FILE" ]]; then
+	local caddy_snippet_file
+	caddy_snippet_file="$(caddy_snippet_file)"
+	if [[ -f "$caddy_snippet_file" ]]; then
 		PROXY_SMOKE_MODE="caddy"
-		PROXY_SMOKE_DOMAIN="$(awk 'NR==2 { gsub(/[[:space:]]*\{.*$/, "", $0); print $0; exit }' "$CADDY_SNIPPET_FILE")"
+		PROXY_SMOKE_DOMAIN="$(awk 'NR==2 { gsub(/[[:space:]]*\{.*$/, "", $0); print $0; exit }' "$caddy_snippet_file")"
 		return 0
 	fi
 	if [[ -f "$NGINX_SITE_FILE" ]]; then
@@ -214,6 +216,34 @@ detect_existing_proxy_config() {
 		return 0
 	fi
 	return 1
+}
+
+caddy_snippet_dir() {
+	if [[ -n "${RELY_CADDY_SNIPPET_DIR:-}" ]]; then
+		printf '%s' "$RELY_CADDY_SNIPPET_DIR"
+		return 0
+	fi
+	if [[ -f "$CADDY_MAIN_FILE" ]]; then
+		if grep -qE '^[[:space:]]*import[[:space:]].*(/etc/caddy/)?conf\.d/\*' "$CADDY_MAIN_FILE"; then
+			printf '%s' "$CADDY_CONF_D"
+			return 0
+		fi
+		if grep -qE '^[[:space:]]*import[[:space:]].*(/etc/caddy/)?Caddyfile\.d/\*' "$CADDY_MAIN_FILE"; then
+			printf '%s' "$CADDY_CADDYFILE_D"
+			return 0
+		fi
+	fi
+	if [[ -d "$CADDY_CONF_D" ]]; then
+		printf '%s' "$CADDY_CONF_D"
+		return 0
+	fi
+	printf '%s' "$CADDY_CADDYFILE_D"
+}
+
+caddy_snippet_file() {
+	local dir
+	dir="$(caddy_snippet_dir)"
+	printf '%s/%s.caddy' "$dir" "$SERVICE_NAME"
 }
 
 proxy_smoke_test() {
@@ -743,8 +773,12 @@ EOF
 
 write_caddy_config() {
 	local domain="$1"
+	local snippet_dir snippet_file import_line
+	snippet_dir="$(caddy_snippet_dir)"
+	snippet_file="$(caddy_snippet_file)"
+	import_line="import ${snippet_dir}/*.caddy"
 	log "configuring Caddy for ${domain}"
-	run_root install -d -m 0755 "$CADDY_SNIPPET_DIR"
+	run_root install -d -m 0755 "$snippet_dir"
 	local tmp
 	tmp="$(mktemp)"
 	cat >"$tmp" <<EOF
@@ -754,7 +788,7 @@ ${domain} {
 	reverse_proxy 127.0.0.1:8080
 }
 EOF
-	write_managed_file "$CADDY_SNIPPET_FILE" "$tmp"
+	write_managed_file "$snippet_file" "$tmp"
 	rm -f "$tmp"
 
 	if [[ ! -f "$CADDY_MAIN_FILE" ]]; then
@@ -762,7 +796,7 @@ EOF
 		main_tmp="$(mktemp)"
 		cat >"$main_tmp" <<EOF
 ${MANAGED_MARKER}
-import ${CADDY_SNIPPET_DIR}/*.caddy
+${import_line}
 EOF
 		run_root install -d -m 0755 "$(dirname "$CADDY_MAIN_FILE")"
 		run_root install -m 0644 "$main_tmp" "$CADDY_MAIN_FILE"
@@ -771,9 +805,9 @@ EOF
 	elif grep -qE '^[[:space:]]*import[[:space:]].*(Caddyfile\.d|conf\.d)/\*' "$CADDY_MAIN_FILE"; then
 		log "existing Caddyfile already imports a snippet directory; leaving it unchanged"
 	else
-		warn "existing Caddyfile does not import ${CADDY_SNIPPET_DIR}; leaving it unchanged to avoid overwriting"
+		warn "existing Caddyfile does not import ${snippet_dir}; leaving it unchanged to avoid overwriting"
 		warn "add this line manually if you want Caddy to load the relay snippet:"
-		warn "import ${CADDY_SNIPPET_DIR}/*.caddy"
+		warn "${import_line}"
 		return 0
 	fi
 
