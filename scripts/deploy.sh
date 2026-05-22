@@ -832,9 +832,6 @@ EOF
 		warn "${import_line}"
 		return 0
 	fi
-
-	run_root caddy validate --config "$CADDY_MAIN_FILE"
-	run_root systemctl reload caddy 2>/dev/null || run_root systemctl restart caddy
 }
 
 write_caddy_peer_config() {
@@ -928,6 +925,8 @@ configure_proxy() {
 		caddy)
 			write_caddy_config "$DOMAIN" "$listen"
 			write_caddy_peer_config "$DOMAIN" "$peer_listen" "$peer_public_port"
+			run_root caddy validate --config "$CADDY_MAIN_FILE"
+			run_root systemctl reload caddy 2>/dev/null || run_root systemctl restart caddy
 			;;
 		nginx)
 			write_nginx_config "$DOMAIN" "$listen"
