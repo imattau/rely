@@ -81,6 +81,7 @@ func (pm *PeerManager) Accept(url string, conn *websocket.Conn) {
 	pm.mu.Lock()
 	pm.peers[url] = p
 	pm.mu.Unlock()
+	log.Printf("p2p: accepted inbound peer=%s", url)
 
 	go func() {
 		pm.serveSession(p, conn)
@@ -181,6 +182,7 @@ func (pm *PeerManager) removePeer(url string, expected *peer) {
 	defer pm.mu.Unlock()
 	if current, ok := pm.peers[url]; ok && current == expected {
 		delete(pm.peers, url)
+		log.Printf("p2p: removed peer=%s", url)
 	}
 }
 
