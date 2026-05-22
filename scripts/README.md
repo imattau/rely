@@ -25,6 +25,7 @@ It uses the current git checkout as its source tree and pulls from `origin` duri
 - Proxy smoke tests retry for a short period before failing so first-start Caddy certificate issuance or reload lag does not trigger a false negative.
 - If Caddy is active but HTTPS still fails during the smoke test, the installer leaves the deployment in place and warns that TLS may still be provisioning instead of rolling back a healthy relay.
 - If deployment fails after updating managed files, rollback stops the relay service first so the binary can be restored without hitting a `text file busy` error.
+- The installer also provisions a peer endpoint on `:8443` by default, proxying to the relay's separate `peer.listen` socket (`:8081` by default) so you can test `note_announce` on the same host with a different port.
 
 ## Examples
 

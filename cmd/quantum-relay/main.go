@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -34,6 +35,10 @@ func defaultConfig() *Config {
 			Listen:      ":8080",
 			Name:        "Quantum Relay",
 			Description: "Nostr relay with quantum walk propagation",
+		},
+		Peer: PeerConfig{
+			Listen:     ":8081",
+			PublicPort: 8443,
 		},
 		Quantum: QuantumConfig{
 			Gamma:                0.5,
@@ -120,6 +125,7 @@ func main() {
 	}
 	r := rely.NewRelay(relayOpts...)
 	fetcher.relay = r
+	peerServer := newPeerServer(peerMgr)
 
 	if cfg.Auth.Required {
 		r.On.Connect = func(c rely.Client) {
@@ -185,8 +191,20 @@ func main() {
 	}()
 
 	log.Printf("starting quantum relay listen=%s", cfg.Relay.Listen)
+	peerErr := make(chan error, 1)
+	go func() {
+		if cfg.Peer.Listen == "" {
+			peerErr <- nil
+			return
+		}
+		peerErr <- servePeerEndpoint(ctx, peerServer, cfg.Peer.Listen)
+	}()
 	if err := r.StartAndServe(ctx, cfg.Relay.Listen); err != nil {
 		log.Printf("relay stopped: %v", err)
+		os.Exit(1)
+	}
+	if err := <-peerErr; err != nil {
+		log.Printf("peer endpoint stopped: %v", err)
 		os.Exit(1)
 	}
 }
@@ -215,6 +233,66 @@ func applyNIP09Deletion(store storage.EventStore, event *nostr.Event) {
 		}
 		store.Delete(targetID)
 	}
+}
+
+func newPeerServer(pm *p2p.PeerManager) http.Handler {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet || req.Header.Get("Upgrade") != "websocket" {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+
+		conn, err := upgrader.Upgrade(w, req, nil)
+		if err != nil {
+			log.Printf("peer upgrade failed: %v", err)
+			return
+		}
+
+		pm.Accept(peerConnectionURL(req), conn)
+	})
+	return mux
+}
+
+func servePeerEndpoint(ctx context.Context, handler http.Handler, listen string) error {
+	server := &http.Server{
+		Addr:              listen,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		log.Printf("serving peer endpoint address=%s", listen)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- err
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return server.Shutdown(shutdownCtx)
+	case err := <-errCh:
+		return err
+	}
+}
+
+func peerConnectionURL(req *http.Request) string {
+	scheme := "ws"
+	if proto := strings.ToLower(req.Header.Get("X-Forwarded-Proto")); proto == "https" || proto == "wss" {
+		scheme = "wss"
+	}
+	host := req.Host
+	path := strings.TrimSuffix(req.URL.Path, "/")
+	if path == "" || path == "/" {
+		return fmt.Sprintf("%s://%s", scheme, host)
+	}
+	return fmt.Sprintf("%s://%s%s", scheme, host, path)
 }
 
 func applyTrustWeights(peerMgr *p2p.PeerManager, trust TrustConfig) {
@@ -404,7 +482,7 @@ func fetchEventFromRelay(ctx context.Context, relayURL, noteID string) (*nostr.E
 		ctx = context.Background()
 	}
 
-	conn, _, err := websocket.DefaultDialer.Dial(normalizeRelayURL(relayURL), nil)
+	conn, _, err := dialRelayWebsocket(normalizeRelayURL(relayURL))
 	if err != nil {
 		return nil, fmt.Errorf("dial relay: %w", err)
 	}
@@ -488,4 +566,20 @@ func normalizeRelayURL(relayURL string) string {
 		return relayURL
 	}
 	return "ws://" + relayURL
+}
+
+func dialRelayWebsocket(relayURL string) (*websocket.Conn, *http.Response, error) {
+	dialer := websocket.Dialer{}
+	headers := http.Header{}
+	switch {
+	case strings.HasPrefix(relayURL, "wss://"):
+		headers.Set("Origin", "https://"+strings.TrimPrefix(relayURL, "wss://"))
+	case strings.HasPrefix(relayURL, "ws://"):
+		headers.Set("Origin", "http://"+strings.TrimPrefix(relayURL, "ws://"))
+	case strings.HasPrefix(relayURL, "https://"):
+		headers.Set("Origin", relayURL)
+	case strings.HasPrefix(relayURL, "http://"):
+		headers.Set("Origin", relayURL)
+	}
+	return dialer.Dial(relayURL, headers)
 }

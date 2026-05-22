@@ -7,6 +7,8 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -409,19 +411,260 @@ func TestQuantumFetchBroadcastToSubscriber(t *testing.T) {
 	}
 }
 
+func TestQuantumRelayLiveSourcePropagation(t *testing.T) {
+	sourceCandidates := liveRelayCandidates(os.Getenv("RELAY_LIVE_SOURCE"))
+	if len(sourceCandidates) == 0 {
+		t.Skip("set RELAY_LIVE_SOURCE to a real relay URL or domain to run the live propagation smoke test")
+	}
+
+	localStore := storage.NewStore()
+	localRelay := rely.NewRelay()
+	localRelay.Reject.Connection.Clear()
+	localRelay.Reject.Event.Clear()
+	localRelay.On.Event = func(c rely.Client, event *nostr.Event) rely.EventResult {
+		localStore.Save(*event)
+		return rely.Success()
+	}
+	localRelay.On.Req = func(ctx context.Context, c rely.Client, id string, filters nostr.Filters) ([]nostr.Event, error) {
+		_ = ctx
+		_ = c
+		_ = id
+		return localStore.Query(filters), nil
+	}
+
+	localLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen local relay: %v", err)
+	}
+	defer localLn.Close()
+
+	localCtx, localCancel := context.WithCancel(context.Background())
+	defer localCancel()
+	go localRelay.Start(localCtx)
+	go func() { _ = (&http.Server{Handler: localRelay}).Serve(localLn) }()
+
+	fetcher := newQuantumFetcher("ws://"+localLn.Addr().String(), localStore, consensus.NewDiffuser(nil, nil), TrustConfig{}, 32)
+	fetcher.relay = localRelay
+
+	note := nostr.Event{
+		CreatedAt: nostr.Now(),
+		Kind:      1,
+		PubKey:    "live-domain-pubkey",
+		Content:   "live source propagation smoke test",
+	}
+	if err := note.Sign(nostr.GeneratePrivateKey()); err != nil {
+		t.Fatalf("sign note: %v", err)
+	}
+
+	var sourceURL string
+	var publishErrs []string
+	for _, candidate := range sourceCandidates {
+		if err := tryPublishToRelay(candidate, note); err == nil {
+			sourceURL = candidate
+			break
+		} else {
+			publishErrs = append(publishErrs, fmt.Sprintf("%s: %v", candidate, err))
+		}
+	}
+	if sourceURL == "" {
+		t.Fatalf("unable to publish to any live source candidate: %v; errors: %s", sourceCandidates, strings.Join(publishErrs, " | "))
+	}
+
+	fetcher.Fetch(note.ID, sourceURL)
+
+	waitForCondition(t, 10*time.Second, func() bool {
+		_, ok := localStore.Get(note.ID)
+		return ok
+	}, func() string {
+		_, ok := localStore.Get(note.ID)
+		return fmt.Sprintf("local store has note=%v", ok)
+	})
+
+	fetched, err := requestEventFromRelay(t, "ws://"+localLn.Addr().String(), note.ID)
+	if err != nil {
+		t.Fatalf("requestEventFromRelay: %v", err)
+	}
+	if fetched.ID != note.ID {
+		t.Fatalf("fetched ID = %s, want %s", fetched.ID, note.ID)
+	}
+	if fetched.Content != note.Content {
+		t.Fatalf("fetched content = %q, want %q", fetched.Content, note.Content)
+	}
+}
+
+func TestPeerEndpointBroadcastsNoteAnnounce(t *testing.T) {
+	peerMgr := p2p.NewPeerManager(nil)
+	server := newPeerServer(peerMgr)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen peer endpoint: %v", err)
+	}
+	defer ln.Close()
+
+	srv := &http.Server{Handler: server}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() { _ = srv.Close() }()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+ln.Addr().String(), nil)
+	if err != nil {
+		t.Fatalf("dial peer endpoint: %v", err)
+	}
+	defer conn.Close()
+
+	peerMgr.Broadcast("note_announce", map[string]any{
+		"id":     "abc",
+		"source": "ws://source.example.com",
+		"pubkey": "pubkey",
+		"round":  7,
+	})
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msg, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read broadcast: %v", err)
+	}
+
+	var env struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(msg, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Type != "note_announce" {
+		t.Fatalf("unexpected envelope type %q", env.Type)
+	}
+}
+
 func publishToRelay(t *testing.T, url string, event nostr.Event) {
 	t.Helper()
-	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	ok, reason, err := publishEventAndReadOK(url, event)
 	if err != nil {
-		t.Fatalf("dial %s: %v", url, err)
+		t.Fatalf("publish %s: %v", url, err)
+	}
+	if !ok {
+		t.Fatalf("publish %s rejected: %s", url, reason)
+	}
+}
+
+func publishEventAndReadOK(url string, event nostr.Event) (bool, string, error) {
+	conn, resp, err := dialTestRelayWebsocket(url)
+	if err != nil {
+		if resp != nil {
+			loc := resp.Header.Get("Location")
+			if loc != "" {
+				return false, "", fmt.Errorf("%w: http %s location=%s", err, resp.Status, loc)
+			}
+			return false, "", fmt.Errorf("%w: http %s", err, resp.Status)
+		}
+		return false, "", err
 	}
 	defer conn.Close()
 
 	payload, _ := json.Marshal([]any{"EVENT", event})
 	if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
-		t.Fatalf("write EVENT: %v", err)
+		return false, "", err
 	}
-	// drain OK response
-	conn.SetReadDeadline(time.Now().Add(time.Second))
-	conn.ReadMessage()
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			return false, "", err
+		}
+
+		var parts []json.RawMessage
+		if err := json.Unmarshal(msg, &parts); err != nil || len(parts) == 0 {
+			continue
+		}
+
+		var label string
+		if err := json.Unmarshal(parts[0], &label); err != nil {
+			continue
+		}
+		switch label {
+		case "OK":
+			var accepted bool
+			if len(parts) > 2 {
+				_ = json.Unmarshal(parts[2], &accepted)
+			}
+			var reason string
+			if len(parts) > 3 {
+				_ = json.Unmarshal(parts[3], &reason)
+			}
+			return accepted, reason, nil
+		case "AUTH":
+			return false, "authentication required", nil
+		case "NOTICE":
+			var reason string
+			if len(parts) > 1 {
+				_ = json.Unmarshal(parts[1], &reason)
+			}
+			return false, reason, nil
+		}
+	}
+}
+
+func normalizeLiveRelayURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(raw, "http://") {
+		return "ws://" + strings.TrimPrefix(raw, "http://")
+	}
+	if strings.HasPrefix(raw, "https://") {
+		return "wss://" + strings.TrimPrefix(raw, "https://")
+	}
+	if strings.HasPrefix(raw, "ws://") || strings.HasPrefix(raw, "wss://") {
+		return raw
+	}
+	return "wss://" + raw
+}
+
+func liveRelayCandidates(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	switch {
+	case strings.HasPrefix(raw, "ws://"), strings.HasPrefix(raw, "wss://"):
+		return []string{raw}
+	case strings.HasPrefix(raw, "http://"):
+		host := strings.TrimPrefix(raw, "http://")
+		return []string{"ws://" + host, "wss://" + host}
+	case strings.HasPrefix(raw, "https://"):
+		host := strings.TrimPrefix(raw, "https://")
+		return []string{"wss://" + host, "ws://" + host}
+	default:
+		return []string{"wss://" + raw, "ws://" + raw}
+	}
+}
+
+func tryPublishToRelay(url string, event nostr.Event) error {
+	ok, reason, err := publishEventAndReadOK(url, event)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		if reason == "" {
+			reason = "rejected"
+		}
+		return fmt.Errorf("%s", reason)
+	}
+	return nil
+}
+
+func dialTestRelayWebsocket(url string) (*websocket.Conn, *http.Response, error) {
+	dialer := websocket.Dialer{}
+	headers := http.Header{}
+	switch {
+	case strings.HasPrefix(url, "wss://"):
+		headers.Set("Origin", "https://"+strings.TrimPrefix(url, "wss://"))
+	case strings.HasPrefix(url, "ws://"):
+		headers.Set("Origin", "http://"+strings.TrimPrefix(url, "ws://"))
+	case strings.HasPrefix(url, "https://"):
+		headers.Set("Origin", url)
+	case strings.HasPrefix(url, "http://"):
+		headers.Set("Origin", url)
+	}
+	return dialer.Dial(url, headers)
 }

@@ -22,6 +22,8 @@ DEFAULT_RELAY_NAME="Quantum Relay"
 DEFAULT_RELAY_DESCRIPTION="Nostr relay with quantum walk propagation"
 DEFAULT_DIRECT_LISTEN=":8080"
 DEFAULT_PROXY_LISTEN="127.0.0.1:8080"
+DEFAULT_PEER_LISTEN=":8081"
+DEFAULT_PEER_PUBLIC_PORT="8443"
 DEFAULT_GAMMA="0.5"
 DEFAULT_FETCH_THRESHOLD="0.05"
 DEFAULT_CONSENSUS_TICK_MS="500"
@@ -184,6 +186,7 @@ print_install_plan() {
 		log_plan "would skip reverse proxy setup"
 	else
 		log_plan "would configure ${PROXY_MODE} for domain ${DOMAIN}"
+		log_plan "would configure peer endpoint on port ${DEFAULT_PEER_PUBLIC_PORT}"
 	fi
 	log_plan "would restart ${SERVICE_NAME} and smoke-test the relay"
 }
@@ -249,6 +252,7 @@ caddy_snippet_file() {
 proxy_smoke_test() {
 	local mode="$1"
 	local domain="$2"
+	local peer_port="${3:-}"
 	if [[ -z "$domain" ]]; then
 		warn "skipping proxy smoke test because no domain could be determined"
 		return 0
@@ -276,6 +280,19 @@ proxy_smoke_test() {
 					return 0
 				fi
 				die "https proxy probe failed for ${domain}"
+			fi
+			if [[ -n "$peer_port" ]]; then
+				local peer_ok=false
+				for _ in $(seq 1 30); do
+					if probe_websocket_proxy "$domain" "$peer_port" "wss"; then
+						peer_ok=true
+						break
+					fi
+					sleep 2
+				done
+				if [[ "$peer_ok" != true ]]; then
+					die "wss proxy probe failed for ${domain}:${peer_port}"
+				fi
 			fi
 			probe_websocket_proxy "$domain" "443" "wss"
 			;;
@@ -673,6 +690,10 @@ relay:
   name: "${RELAY_NAME}"
   description: "${RELAY_DESCRIPTION}"
 
+peer:
+  listen: "${DEFAULT_PEER_LISTEN}"
+  public_port: ${DEFAULT_PEER_PUBLIC_PORT}
+
 quantum:
   gamma: ${DEFAULT_GAMMA}
   fetch_threshold: ${DEFAULT_FETCH_THRESHOLD}
@@ -816,6 +837,33 @@ EOF
 	run_root systemctl reload caddy 2>/dev/null || run_root systemctl restart caddy
 }
 
+write_caddy_peer_config() {
+	local domain="$1"
+	local listen="$2"
+	local port="$3"
+	local snippet_dir snippet_file
+	snippet_dir="$(caddy_snippet_dir)"
+	snippet_file="${snippet_dir}/${SERVICE_NAME}-peer.caddy"
+
+	if [[ -z "$port" ]]; then
+		port="$DEFAULT_PEER_PUBLIC_PORT"
+	fi
+
+	log "configuring Caddy peer endpoint for ${domain}:${port}"
+	run_root install -d -m 0755 "$snippet_dir"
+	local tmp
+	tmp="$(mktemp)"
+	cat >"$tmp" <<EOF
+${MANAGED_MARKER}
+${domain}:${port} {
+	encode zstd gzip
+	reverse_proxy ${listen}
+}
+EOF
+	write_managed_file "$snippet_file" "$tmp"
+	rm -f "$tmp"
+}
+
 write_nginx_config() {
 	local domain="$1"
 	local listen="$2"
@@ -866,6 +914,8 @@ EOF
 configure_proxy() {
 	local mode="$1"
 	local listen="$2"
+	local peer_listen="$3"
+	local peer_public_port="$4"
 	if [[ "$mode" == "none" ]]; then
 		warn "no reverse proxy detected or requested; skipping proxy setup"
 		return
@@ -875,8 +925,14 @@ configure_proxy() {
 		return
 	fi
 	case "$mode" in
-		caddy) write_caddy_config "$DOMAIN" "$listen" ;;
-		nginx) write_nginx_config "$DOMAIN" "$listen" ;;
+		caddy)
+			write_caddy_config "$DOMAIN" "$listen"
+			write_caddy_peer_config "$DOMAIN" "$peer_listen" "$peer_public_port"
+			;;
+		nginx)
+			write_nginx_config "$DOMAIN" "$listen"
+			warn "peer endpoint setup is currently only automated for Caddy; configure nginx manually for ${DOMAIN}:${peer_public_port} -> ${peer_listen}"
+			;;
 		*) die "unknown proxy mode: ${mode}" ;;
 	esac
 }
@@ -935,6 +991,52 @@ parse_listen_from_config() {
 	printf '%s' "$listen"
 }
 
+parse_peer_listen_from_config() {
+	if [[ ! -f "$CONFIG_FILE" ]]; then
+		printf '%s' "$DEFAULT_PEER_LISTEN"
+		return
+	fi
+	local listen
+	listen="$(awk '
+		/^[[:space:]]*peer:[[:space:]]*$/ { in_peer=1; next }
+		in_peer && /^[[:space:]]*listen:[[:space:]]*/ {
+			sub(/^[[:space:]]*listen:[[:space:]]*/, "", $0)
+			gsub(/"/, "", $0)
+			gsub(/\047/, "", $0)
+			print $0
+			exit
+		}
+	' "$CONFIG_FILE")"
+	if [[ -z "$listen" ]]; then
+		printf '%s' "$DEFAULT_PEER_LISTEN"
+		return
+	fi
+	printf '%s' "$listen"
+}
+
+parse_peer_public_port_from_config() {
+	if [[ ! -f "$CONFIG_FILE" ]]; then
+		printf '%s' "$DEFAULT_PEER_PUBLIC_PORT"
+		return
+	fi
+	local port
+	port="$(awk '
+		/^[[:space:]]*peer:[[:space:]]*$/ { in_peer=1; next }
+		in_peer && /^[[:space:]]*public_port:[[:space:]]*/ {
+			sub(/^[[:space:]]*public_port:[[:space:]]*/, "", $0)
+			gsub(/"/, "", $0)
+			gsub(/\047/, "", $0)
+			print $0
+			exit
+		}
+	' "$CONFIG_FILE")"
+	if [[ -z "$port" ]]; then
+		printf '%s' "$DEFAULT_PEER_PUBLIC_PORT"
+		return
+	fi
+	printf '%s' "$port"
+}
+
 restart_service() {
 	run_root systemctl daemon-reload
 	run_root systemctl stop "$SERVICE_NAME" 2>/dev/null || true
@@ -967,11 +1069,15 @@ install_action() {
 	build_binary
 	write_config
 	write_service
-	configure_proxy "$PROXY_MODE" "$(parse_listen_from_config)"
+	configure_proxy \
+		"$PROXY_MODE" \
+		"$(parse_listen_from_config)" \
+		"$(parse_peer_listen_from_config)" \
+		"$(parse_peer_public_port_from_config)"
 	restart_service
 	wait_for_relay "$(parse_listen_from_config)"
 	if [[ "$PROXY_MODE" != "none" ]]; then
-		proxy_smoke_test "$PROXY_MODE" "$DOMAIN"
+		proxy_smoke_test "$PROXY_MODE" "$DOMAIN" "$(parse_peer_public_port_from_config)"
 	fi
 	log "install complete"
 }
@@ -994,7 +1100,7 @@ update_action() {
 	run_root systemctl restart "$SERVICE_NAME"
 	wait_for_relay "$(parse_listen_from_config)"
 	if detect_existing_proxy_config; then
-		proxy_smoke_test "$PROXY_SMOKE_MODE" "$PROXY_SMOKE_DOMAIN"
+		proxy_smoke_test "$PROXY_SMOKE_MODE" "$PROXY_SMOKE_DOMAIN" "$(parse_peer_public_port_from_config)"
 	fi
 	log "update complete"
 }
@@ -1013,7 +1119,7 @@ test_action() {
 	wait_for_relay "$listen"
 	run_root systemctl is-active --quiet "$SERVICE_NAME" || die "service ${SERVICE_NAME} is not active"
 	if detect_existing_proxy_config; then
-		proxy_smoke_test "$PROXY_SMOKE_MODE" "$PROXY_SMOKE_DOMAIN"
+		proxy_smoke_test "$PROXY_SMOKE_MODE" "$PROXY_SMOKE_DOMAIN" "$(parse_peer_public_port_from_config)"
 	fi
 	log "install test passed"
 }

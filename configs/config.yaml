@@ -3,6 +3,10 @@ relay:
   name: "Quantum Relay"
   description: "Nostr relay with quantum walk propagation"
 
+peer:
+  listen: ":8081"
+  public_port: 8443
+
 quantum:
   gamma: 0.5
   fetch_threshold: 0.05

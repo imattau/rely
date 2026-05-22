@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/sha1"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
@@ -182,7 +183,12 @@ func (d Dialer) Dial(rawurl string, requestHeader http.Header) (*Conn, *http.Res
 		}
 	}
 
-	conn, err := net.Dial("tcp", host)
+	var conn net.Conn
+	if u.Scheme == "wss" {
+		conn, err = tls.Dial("tcp", host, &tls.Config{ServerName: u.Hostname()})
+	} else {
+		conn, err = net.Dial("tcp", host)
+	}
 	if err != nil {
 		return nil, nil, err
 	}

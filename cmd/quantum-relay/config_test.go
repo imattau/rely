@@ -10,6 +10,9 @@ func TestLoadConfig(t *testing.T) {
 relay:
   listen: ":9999"
   name: "Test"
+peer:
+  listen: ":9001"
+  public_port: 9443
 quantum:
   gamma: 0.3
   fetch_threshold: 0.1
@@ -43,6 +46,12 @@ peers:
 	}
 	if cfg.Relay.Listen != ":9999" {
 		t.Errorf("Listen = %q, want :9999", cfg.Relay.Listen)
+	}
+	if cfg.Peer.Listen != ":9001" {
+		t.Errorf("Peer.Listen = %q, want :9001", cfg.Peer.Listen)
+	}
+	if cfg.Peer.PublicPort != 9443 {
+		t.Errorf("Peer.PublicPort = %d, want 9443", cfg.Peer.PublicPort)
 	}
 	if cfg.Quantum.Gamma != 0.3 {
 		t.Errorf("Gamma = %f, want 0.3", cfg.Quantum.Gamma)
@@ -133,5 +142,15 @@ func TestConfigMaxConcurrentFetchesDefault(t *testing.T) {
 	cfg := defaultConfig()
 	if cfg.Quantum.MaxConcurrentFetches != 32 {
 		t.Fatalf("expected default 32, got %d", cfg.Quantum.MaxConcurrentFetches)
+	}
+}
+
+func TestConfigPeerDefaults(t *testing.T) {
+	cfg := defaultConfig()
+	if cfg.Peer.Listen != ":8081" {
+		t.Fatalf("expected default peer listen :8081, got %q", cfg.Peer.Listen)
+	}
+	if cfg.Peer.PublicPort != 8443 {
+		t.Fatalf("expected default peer public port 8443, got %d", cfg.Peer.PublicPort)
 	}
 }

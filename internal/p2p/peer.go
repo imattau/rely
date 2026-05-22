@@ -61,6 +61,33 @@ func (pm *PeerManager) Connect(url string) error {
 	return nil
 }
 
+// Accept registers an inbound websocket peer connection and services it using the
+// same envelope protocol as outbound peers.
+func (pm *PeerManager) Accept(url string, conn *websocket.Conn) {
+	if conn == nil || url == "" {
+		if conn != nil {
+			_ = conn.Close()
+		}
+		return
+	}
+
+	p := &peer{
+		url:  url,
+		conn: conn,
+		send: make(chan []byte, 256),
+		done: make(chan struct{}),
+	}
+
+	pm.mu.Lock()
+	pm.peers[url] = p
+	pm.mu.Unlock()
+
+	go func() {
+		pm.serveSession(p, conn)
+		pm.removePeer(url, p)
+	}()
+}
+
 // AddConnectedPeerForTest registers an in-memory peer without dialing a live websocket.
 // It exists to keep higher-level tests sandbox-friendly.
 func (pm *PeerManager) AddConnectedPeerForTest(url string) {
@@ -146,6 +173,14 @@ func (pm *PeerManager) Disconnect(url string) {
 	}
 }
 
+func (pm *PeerManager) removePeer(url string, expected *peer) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	if current, ok := pm.peers[url]; ok && current == expected {
+		delete(pm.peers, url)
+	}
+}
+
 func (pm *PeerManager) Peers() []string {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
@@ -182,51 +217,55 @@ func (pm *PeerManager) reconnectLoop(p *peer) {
 			continue
 		}
 
-		p.setConn(conn)
-		readSeen := false
-		activity := make(chan struct{}, 1)
-		connStop := make(chan struct{})
-		var stopOnce sync.Once
-		stopConn := func() {
-			stopOnce.Do(func() {
-				close(connStop)
-				_ = conn.Close()
-			})
-		}
-
-		go func() {
-			pm.readLoop(p, conn, activity, connStop)
-			stopConn()
-		}()
-		go func() {
-			pm.writeLoop(p, conn, connStop)
-			stopConn()
-		}()
-
-		for {
-			select {
-			case <-p.done:
-				stopConn()
-				return
-			case <-activity:
-				readSeen = true
-				backoff = time.Second
-			case <-connStop:
-				if readSeen {
-					backoff = time.Second
-				} else {
-					backoff = nextBackoff(backoff)
-				}
-				p.clearConn(conn)
-				if !sleepWithStop(p.done, backoff) {
-					return
-				}
-				goto reconnect
-			}
-		}
-
-	reconnect:
+		readSeen := pm.serveSession(p, conn)
 		p.clearConn(conn)
+		if readSeen {
+			backoff = time.Second
+		} else {
+			backoff = nextBackoff(backoff)
+		}
+		if !sleepWithStop(p.done, backoff) {
+			return
+		}
+	}
+}
+
+func (pm *PeerManager) serveSession(p *peer, conn *websocket.Conn) bool {
+	if p == nil || conn == nil {
+		return false
+	}
+
+	p.setConn(conn)
+	readSeen := false
+	activity := make(chan struct{}, 1)
+	connStop := make(chan struct{})
+	var stopOnce sync.Once
+	stopConn := func() {
+		stopOnce.Do(func() {
+			close(connStop)
+			_ = conn.Close()
+		})
+	}
+
+	go func() {
+		pm.readLoop(p, conn, activity, connStop)
+		stopConn()
+	}()
+	go func() {
+		pm.writeLoop(p, conn, connStop)
+		stopConn()
+	}()
+
+	for {
+		select {
+		case <-p.done:
+			stopConn()
+			return readSeen
+		case <-activity:
+			readSeen = true
+		case <-connStop:
+			return readSeen
+		}
 	}
 }
 

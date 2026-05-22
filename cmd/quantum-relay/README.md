@@ -185,6 +185,10 @@ relay:
   name: "My Quantum Relay"
   description: "Nostr relay with quantum walk propagation"
 
+peer:
+  listen: ":8081"
+  public_port: 8443        # optional separate peer websocket port for note_announce
+
 quantum:
   gamma: 0.5                   # reputation damping strength
   fetch_threshold: 0.05        # minimum walk probability to trigger a fetch
@@ -357,4 +361,7 @@ go test ./tests/ -v -run TestSpamStress
 # Trusted-peer integration tests
 go test ./cmd/quantum-relay/ -v -run TestTrustedMesh
 go test ./cmd/quantum-relay/ -v -run TestFetchEventFromRelay
+
+# Live source propagation smoke test against a real relay
+RELAY_LIVE_SOURCE=quantum-relay.3nostr.com go test ./cmd/quantum-relay/ -v -run TestQuantumRelayLiveSourcePropagation
 ```

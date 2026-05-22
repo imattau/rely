@@ -10,6 +10,7 @@ import (
 
 type Config struct {
 	Relay   RelayConfig   `yaml:"relay"`
+	Peer    PeerConfig    `yaml:"peer"`
 	Quantum QuantumConfig `yaml:"quantum"`
 	Spam    SpamConfig    `yaml:"spam"`
 	Storage StorageConfig `yaml:"storage"`
@@ -22,6 +23,11 @@ type RelayConfig struct {
 	Listen      string `yaml:"listen"`
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`
+}
+
+type PeerConfig struct {
+	Listen     string `yaml:"listen"`
+	PublicPort int    `yaml:"public_port"`
 }
 
 type QuantumConfig struct {
@@ -132,6 +138,17 @@ func parseConfig(content string, cfg *Config) error {
 				cfg.Relay.Name = value
 			case "description":
 				cfg.Relay.Description = value
+			}
+		case "peer":
+			switch key {
+			case "listen":
+				cfg.Peer.Listen = value
+			case "public_port":
+				v, err := strconv.Atoi(value)
+				if err != nil {
+					return fmt.Errorf("invalid peer.public_port: %w", err)
+				}
+				cfg.Peer.PublicPort = v
 			}
 		case "quantum":
 			switch key {
