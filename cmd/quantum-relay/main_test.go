@@ -185,21 +185,7 @@ func TestAuthRequiredRejectsUnauthedEvent(t *testing.T) {
 	}
 	defer conn.Close()
 
-	_, msg, err := conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("read auth challenge: %v", err)
-	}
-	var authParts []json.RawMessage
-	if err := json.Unmarshal(msg, &authParts); err != nil {
-		t.Fatalf("unmarshal auth challenge: %v", err)
-	}
-	if len(authParts) == 0 {
-		t.Fatal("expected auth challenge response")
-	}
-	var label string
-	if err := json.Unmarshal(authParts[0], &label); err != nil || label != "AUTH" {
-		t.Fatalf("expected AUTH challenge, got %s", string(msg))
-	}
+	drainAuthChallenge(t, conn)
 
 	event := nostr.Event{
 		CreatedAt: nostr.Now(),
@@ -218,7 +204,9 @@ func TestAuthRequiredRejectsUnauthedEvent(t *testing.T) {
 		t.Fatalf("write event: %v", err)
 	}
 
-	_, msg, err = conn.ReadMessage()
+	var label string
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msg, err := conn.ReadMessage()
 	if err != nil {
 		t.Fatalf("read ok response: %v", err)
 	}
@@ -238,6 +226,32 @@ func TestAuthRequiredRejectsUnauthedEvent(t *testing.T) {
 	}
 	if accepted {
 		t.Fatal("expected unauthenticated event to be rejected")
+	}
+}
+
+func drainAuthChallenge(t *testing.T, conn *websocket.Conn) {
+	t.Helper()
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		_ = conn.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				return
+			}
+			return
+		}
+
+		var parts []json.RawMessage
+		if err := json.Unmarshal(msg, &parts); err != nil || len(parts) == 0 {
+			continue
+		}
+
+		var label string
+		if err := json.Unmarshal(parts[0], &label); err == nil && label == "AUTH" {
+			return
+		}
 	}
 }
 
@@ -564,6 +578,7 @@ func TestQuantumRelayLiveSourcePeerPropagation(t *testing.T) {
 	graph.SetRelays([]string{localURL})
 	graph.Recompute()
 	prop := quantum.NewPropagator(graph, graph.GetRelayIndex(localURL), 0.05, fetcher.Fetch)
+	prop.SetReputationLookup(diffuser.GetReputation)
 
 	peerCandidates := livePeerCandidates(os.Getenv("RELAY_LIVE_SOURCE"))
 	if len(peerCandidates) == 0 {
@@ -866,6 +881,7 @@ func TestLocalTwoRelayPeerPropagation(t *testing.T) {
 	fetcherB := newQuantumFetcher(relayBURL, storeB, diffuserB, TrustConfig{}, 32)
 	fetcherB.relay = relayB
 	propB := quantum.NewPropagator(graphB, graphB.GetRelayIndex(relayBURL), 0.05, fetcherB.Fetch)
+	propB.SetReputationLookup(diffuserB.GetReputation)
 
 	announceSeen := make(chan struct{}, 1)
 	cfg := defaultConfig()

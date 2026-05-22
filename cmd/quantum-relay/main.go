@@ -122,6 +122,7 @@ func main() {
 
 	fetcher := newQuantumFetcher(relayURL, store, diffuser, cfg.Trust, cfg.Quantum.MaxConcurrentFetches)
 	prop = quantum.NewPropagator(graph, graph.GetRelayIndex(relayURL), cfg.Quantum.FetchThreshold, fetcher.Fetch)
+	prop.SetReputationLookup(diffuser.GetReputation)
 
 	applyTrustWeights(peerMgr, cfg.Trust)
 

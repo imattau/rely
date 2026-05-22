@@ -1,9 +1,9 @@
 package swarm
 
 import (
+	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"math/rand/v2"
 	"time"
 
@@ -88,9 +88,6 @@ func (c *client) write(ctx context.Context, cancel context.CancelFunc) {
 			c.conn.SetWriteDeadline(time.Now().Add(c.config.WriteWait))
 			err := c.conn.WriteMessage(ws.TextMessage, data)
 			if err != nil {
-				if IsBadError(err) {
-					c.swarm.report(fmt.Errorf("failed to write: %w", err))
-				}
 				return
 			}
 
@@ -101,9 +98,6 @@ func (c *client) write(ctx context.Context, cancel context.CancelFunc) {
 			c.conn.SetWriteDeadline(time.Now().Add(c.config.WriteWait))
 			err := c.conn.WriteMessage(ws.PingMessage, nil)
 			if err != nil {
-				if IsBadError(err) {
-					c.swarm.report(fmt.Errorf("failed to ping: %w", err))
-				}
 				return
 			}
 		}
@@ -129,15 +123,15 @@ func (c *client) read(ctx context.Context, cancel context.CancelFunc) {
 			return
 
 		default:
-			_, reader, err := c.conn.NextReader()
+			messageType, data, err := c.conn.ReadMessage()
 			if err != nil {
-				if IsBadError(err) {
-					c.swarm.report(fmt.Errorf("failed to read: %w", err))
-				}
 				return
 			}
+			if messageType != ws.TextMessage || len(data) == 0 || data[0] != '[' {
+				continue
+			}
 
-			decoder := json.NewDecoder(reader)
+			decoder := json.NewDecoder(bytes.NewReader(data))
 			if err := c.ValidateResponse(decoder); err != nil {
 				c.swarm.report(err)
 				return

@@ -23,13 +23,19 @@ func TestAverageReputation(t *testing.T) {
 	}
 }
 
-func TestAverageRound(t *testing.T) {
+func TestMonotonicRoundMerge(t *testing.T) {
 	d := consensus.NewDiffuser(nil, nil)
 	d.SetRound(10)
 	neighbour := &consensus.State{Round: 14}
 	d.MergeState(neighbour)
-	if d.GetRound() != 12 {
-		t.Errorf("merged round = %d, want 12", d.GetRound())
+	if d.GetRound() != 15 {
+		t.Errorf("merged round = %d, want 15", d.GetRound())
+	}
+
+	stale := &consensus.State{Round: 4}
+	d.MergeState(stale)
+	if d.GetRound() != 16 {
+		t.Errorf("merged round after stale state = %d, want 16", d.GetRound())
 	}
 }
 

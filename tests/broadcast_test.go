@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -84,6 +85,9 @@ func TestBroadcast(t *testing.T) {
 		return repeat(testEvent, config.ClientBuffer), nil // make sure the client buffers are full
 	}
 
+	addr, cleanup := startRelayOnListener(t, relay)
+	defer cleanup()
+
 	// Step 2: create the swarm with fuzzy client behaviors.
 	swarm, err := swarm.New(config.Swarm, swarm.BehaviorDistribution{
 		{P: 0.2, Behavior: simpleEventClient{testEvent}},
@@ -94,28 +98,21 @@ func TestBroadcast(t *testing.T) {
 	}
 
 	// Step 3: run everything.
-	relayErr := make(chan error, 1)
 	go func() {
 		ctx, cancel := context.WithTimeout(ctx, config.RelayDuration)
 		defer cancel()
 		go displayStats(ctx, "broadcast", start, &processed, relay, swarm)
-		if err := relay.StartAndServe(ctx, config.Address); err != nil {
-			relayErr <- err
-		}
 	}()
 
 	go func() {
 		ctx, cancel := context.WithTimeout(ctx, config.SwarmDuration)
 		defer cancel()
-		swarm.Run(ctx, config.Address)
+		swarm.Run(ctx, addr)
 	}()
 
 	go func() { http.ListenAndServe(":6060", nil) }() // pprof
 
 	select {
-	case err := <-relayErr:
-		t.Fatalf("relay error: %v", err)
-
 	case err := <-swarm.Err():
 		t.Fatalf("swarm error: %v", err)
 
@@ -172,4 +169,28 @@ func repeat[T any](e T, n int) []T {
 		s[i] = e
 	}
 	return s
+}
+
+func startRelayOnListener(t testing.TB, relay *rely.Relay) (string, func()) {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen relay: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	relay.Start(ctx)
+
+	server := &http.Server{Handler: relay}
+	go func() { _ = server.Serve(ln) }()
+
+	cleanup := func() {
+		cancel()
+		_ = server.Close()
+		_ = ln.Close()
+		relay.Wait()
+	}
+
+	return "ws://" + ln.Addr().String(), cleanup
 }

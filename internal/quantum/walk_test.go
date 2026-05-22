@@ -45,6 +45,58 @@ func TestPropagatorSkipsBelowThreshold(t *testing.T) {
 	}
 }
 
+func TestPropagatorUsesReputationLookup(t *testing.T) {
+	g := quantum.NewGraphState()
+	g.SetRelays([]string{"local"})
+	g.Recompute()
+
+	var fetched int32
+	p := quantum.NewPropagator(g, 0, 0.5, func(noteID, sourceRelay string) {
+		atomic.StoreInt32(&fetched, 1)
+	})
+	p.SetReputationLookup(func(pubkey string) float64 {
+		if pubkey == "bad" {
+			return -1
+		}
+		return 1
+	})
+
+	p.AddNote("good-note", "local", "good", 0)
+	p.Tick(1, 1.0)
+
+	time.Sleep(50 * time.Millisecond)
+	if atomic.LoadInt32(&fetched) == 0 {
+		t.Fatal("expected positive reputation note to fetch")
+	}
+
+	atomic.StoreInt32(&fetched, 0)
+	p.AddNote("bad-note", "local", "bad", 0)
+	p.Tick(1, 1.0)
+
+	time.Sleep(50 * time.Millisecond)
+	if atomic.LoadInt32(&fetched) != 0 {
+		t.Fatal("expected negative reputation note to remain below threshold")
+	}
+}
+
+func TestPropagatorDoesNotBypassQuantumWalkAtDefaultThreshold(t *testing.T) {
+	g := quantum.NewGraphState()
+	g.SetRelays([]string{"local", "remote"})
+	g.Recompute()
+
+	var fetched int32
+	p := quantum.NewPropagator(g, 0, 0.05, func(noteID, sourceRelay string) {
+		atomic.StoreInt32(&fetched, 1)
+	})
+	p.AddNote("note-default-threshold", "remote", "pubkey", 0)
+	p.Tick(1, 0)
+
+	time.Sleep(50 * time.Millisecond)
+	if atomic.LoadInt32(&fetched) != 0 {
+		t.Fatal("expected disconnected remote note to stay unfetched at default threshold")
+	}
+}
+
 func TestPropagatorPrunesOldNotes(t *testing.T) {
 	g := quantum.NewGraphState()
 	g.SetRelays([]string{"local"})

@@ -1,7 +1,6 @@
 package consensus
 
 import (
-	"math"
 	"sync"
 	"time"
 )
@@ -102,8 +101,14 @@ func (d *Diffuser) MergeState(neighbour *State, weight ...float64) {
 		d.dirty = make(map[string]float64)
 	}
 
-	avg := (float64(d.round) + float64(neighbour.Round)*w) / (1.0 + w)
-	d.round = int64(math.Round(avg))
+	nextRound := d.round
+	if neighbour.Round > nextRound {
+		nextRound = neighbour.Round
+	}
+	d.round = nextRound + 1
+	if d.round < nextRound {
+		d.round = nextRound
+	}
 
 	for k, v := range neighbour.Rep {
 		local := d.rep[k]

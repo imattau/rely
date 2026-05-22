@@ -132,28 +132,24 @@ func TestFuzzy(t *testing.T) {
 	}
 
 	// Step 3: run everything.
-	relayErr := make(chan error, 1)
+	addr, cleanup := startRelayOnListener(t, relay)
+	defer cleanup()
+
 	go func() {
 		ctx, cancel := context.WithTimeout(ctx, config.RelayDuration)
 		defer cancel()
 		go displayStats(ctx, "fuzzy", start, &processed, relay, swarm)
-		if err := relay.StartAndServe(ctx, config.Address); err != nil {
-			relayErr <- err
-		}
 	}()
 
 	go func() {
 		ctx, cancel := context.WithTimeout(ctx, config.SwarmDuration)
 		defer cancel()
-		swarm.Run(ctx, config.Address)
+		swarm.Run(ctx, addr)
 	}()
 
 	go func() { http.ListenAndServe(":6060", nil) }() // pprof
 
 	select {
-	case err := <-relayErr:
-		t.Fatalf("relay error: %v", err)
-
 	case err := <-swarm.Err():
 		t.Fatalf("swarm error: %v", err)
 

@@ -136,6 +136,7 @@ func (s *T) Run(ctx context.Context, addr string) {
 				}
 
 				s.report(fmt.Errorf("failed to connect with websocket: %w", err))
+				continue
 			}
 
 			s.connectionEstablished.Add(1)

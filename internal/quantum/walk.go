@@ -15,10 +15,11 @@ type activeNote struct {
 }
 
 type Propagator struct {
-	graph      *GraphState
-	localIndex int
-	threshold  float64
-	fetchFunc  func(noteID, sourceRelay string)
+	graph            *GraphState
+	localIndex       int
+	threshold        float64
+	fetchFunc        func(noteID, sourceRelay string)
+	reputationLookup func(pubkey string) float64
 
 	mu           sync.RWMutex
 	notes        []activeNote
@@ -44,6 +45,14 @@ func NewPropagator(graph *GraphState, localIndex int, threshold float64, fetchFu
 		maxAgeRounds: 600,
 		fetchedSweep: 32,
 	}
+}
+
+// SetReputationLookup wires the propagator to the current pubkey reputation source.
+// A nil lookup leaves propagation reputation-neutral.
+func (p *Propagator) SetReputationLookup(lookup func(pubkey string) float64) {
+	p.mu.Lock()
+	p.reputationLookup = lookup
+	p.mu.Unlock()
 }
 
 // SetRetention configures the active-note cap and round-based TTL.
@@ -152,15 +161,15 @@ func (p *Propagator) probabilityForNoteLocked(note activeNote, currentRound int6
 
 	amp := p.graph.Amplitude(p.localIndex, srcIdx, t)
 	prob := cmplx.Abs(amp) * cmplx.Abs(amp)
-	prob *= ReputationFactor(0, gamma, t)
+	rep := 0.0
+	if p.reputationLookup != nil {
+		rep = p.reputationLookup(note.pubKey)
+	}
+	prob *= ReputationFactor(rep, gamma, t)
 	if t > 0 {
-		if p.threshold <= 0.05 {
-			prob = 1
-		} else {
-			exploration := 0.02 * (1 - math.Exp(-t/25))
-			if math.IsNaN(prob) || prob < exploration {
-				prob = exploration
-			}
+		exploration := 0.02 * (1 - math.Exp(-t/25))
+		if math.IsNaN(prob) || prob < exploration {
+			prob = exploration
 		}
 	}
 
