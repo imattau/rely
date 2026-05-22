@@ -23,6 +23,7 @@ It uses the current git checkout as its source tree and pulls from `origin` duri
 - Before starting the service, the installer stops any existing `quantum-relay` unit and checks whether the listen port is already occupied by another process. If the port is busy, it exits with a diagnostic instead of looping on restart failures.
 - If the requested listen address is occupied, the installer automatically walks upward from the requested port until it finds a free local port, then writes that chosen port into the config and proxy snippets. If an existing config is present, it patches `relay.listen` to match the chosen port instead of leaving the old value behind.
 - Proxy smoke tests retry for a short period before failing so first-start Caddy certificate issuance or reload lag does not trigger a false negative.
+- If Caddy is active but HTTPS still fails during the smoke test, the installer leaves the deployment in place and warns that TLS may still be provisioning instead of rolling back a healthy relay.
 - If deployment fails after updating managed files, rollback stops the relay service first so the binary can be restored without hitting a `text file busy` error.
 
 ## Examples

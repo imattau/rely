@@ -129,10 +129,14 @@ rollback() {
 	for target in "${!BACKUPS[@]}"; do
 		backup="${BACKUPS[$target]}"
 		if [[ -f "$backup" ]]; then
+			local restore_target
+			restore_target="${target}.restore.$$"
 			if [[ -n "${SUDO:-}" ]]; then
-				"$SUDO" cp -a "$backup" "$target"
+				"$SUDO" cp -a "$backup" "$restore_target"
+				"$SUDO" mv -f "$restore_target" "$target"
 			else
-				cp -a "$backup" "$target"
+				cp -a "$backup" "$restore_target"
+				mv -f "$restore_target" "$target"
 			fi
 		fi
 	done
@@ -236,6 +240,11 @@ proxy_smoke_test() {
 				sleep 2
 			done
 			if [[ "$ok" != true ]]; then
+				warn "https proxy probe failed for ${domain}; checking whether Caddy is still provisioning TLS"
+				if systemctl is-active --quiet caddy 2>/dev/null; then
+					warn "Caddy is active; leaving the install in place and allowing TLS to finish provisioning"
+					return 0
+				fi
 				die "https proxy probe failed for ${domain}"
 			fi
 			probe_websocket_proxy "$domain" "443" "wss"
