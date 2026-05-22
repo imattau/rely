@@ -9,6 +9,7 @@ It uses the current git checkout as its source tree and pulls from `origin` duri
 - `update` pulls the latest source from GitHub, rebuilds the binary, restarts the service, and runs a smoke test.
 - `test` checks that the service is active and that the relay responds on its configured listen address.
 - `--dry-run` prints the planned actions without writing files or restarting services.
+- In dry-run mode the installer does not prompt; it uses the values you provided on the command line or through environment variables.
 
 ## Proxy behavior
 

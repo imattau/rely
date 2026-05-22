@@ -266,15 +266,15 @@ prompt() {
 	local question="$2"
 	local default="$3"
 	local answer=""
-	local input_fd=""
 
 	if [[ "$NON_INTERACTIVE" == true || ! -t 0 ]]; then
 		answer="$default"
 	else
 		if [[ -r /dev/tty && -w /dev/tty ]]; then
-			input_fd="/dev/tty"
 			printf '%s [%s]: ' "$question" "$default" >/dev/tty
-			read -r answer <"$input_fd"
+			exec 3</dev/tty
+			IFS= read -r -u 3 answer || true
+			exec 3<&-
 		else
 			read -r -p "${question} [${default}]: " answer
 		fi
@@ -690,8 +690,6 @@ install_action() {
 	CURRENT_ACTION="install"
 	require_root_tools
 	check_go_version
-	prompt_required RELAY_NAME "Relay name" "$RELAY_NAME"
-	prompt_required RELAY_DESCRIPTION "Relay description" "$RELAY_DESCRIPTION"
 	PROXY_MODE="$(detect_proxy_mode)"
 	ensure_proxy_domain
 	if is_true "$DRY_RUN"; then
@@ -699,6 +697,8 @@ install_action() {
 		return
 	fi
 	ensure_sudo
+	prompt_required RELAY_NAME "Relay name" "$RELAY_NAME"
+	prompt_required RELAY_DESCRIPTION "Relay description" "$RELAY_DESCRIPTION"
 	ensure_directories
 	ensure_system_user
 	build_binary
