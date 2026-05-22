@@ -21,11 +21,11 @@ It uses the current git checkout as its source tree and pulls from `origin` duri
 - The relay smoke test requests NIP-11 with `Accept: application/nostr+json`; plain GETs are expected to return `400` by the relay and are not used as readiness checks.
 - When Caddy is detected, the installer also probes the public websocket endpoint over `wss://` using a real websocket upgrade handshake. Nginx is probed over `ws://` because the generated site config is HTTP-only unless you add TLS separately.
 - Before starting the service, the installer stops any existing `quantum-relay` unit and checks whether the listen port is already occupied by another process. If the port is busy, it exits with a diagnostic instead of looping on restart failures.
-- If the requested listen address is occupied, the installer automatically walks upward from the requested port until it finds a free local port, then writes that chosen port into the config and proxy snippets. If an existing config is present, it patches `relay.listen` to match the chosen port instead of leaving the old value behind.
+- If the requested public listen address is occupied, the installer automatically walks upward from the requested port until it finds a free local port, then writes that chosen port into the config and public proxy snippet. If an existing config is present, it patches `relay.listen` to match the chosen port instead of leaving the old value behind.
 - Proxy smoke tests retry for a short period before failing so first-start Caddy certificate issuance or reload lag does not trigger a false negative.
 - If Caddy is active but HTTPS still fails during the smoke test, the installer leaves the deployment in place and warns that TLS may still be provisioning instead of rolling back a healthy relay.
 - If deployment fails after updating managed files, rollback stops the relay service first so the binary can be restored without hitting a `text file busy` error.
-- The installer also provisions a peer endpoint on `:8443` by default, proxying to the relay's separate `peer.listen` socket (`:8081` by default) so you can test `note_announce` on the same host with a different port.
+- The installer also provisions a peer endpoint on `:8443` by default, proxying to the relay's separate `peer.listen` socket (default `:8081`, auto-selected to a free distinct port when needed) so you can test `note_announce` on the same host with a different port.
 - The installer writes `relay.public_url` so announces and fetches use the externally reachable relay URL (`wss://` for Caddy, `ws://` for Nginx). If that setting is empty, the relay falls back to its local listen address, which is only suitable for in-process or same-host testing.
 
 ## Examples
@@ -43,6 +43,7 @@ It uses the current git checkout as its source tree and pulls from `origin` duri
 - `RELY_PROXY=auto|caddy|nginx|none`
 - `RELY_DOMAIN=relay.example.com`
 - `RELY_LISTEN=127.0.0.1:8080`
+- `RELY_PEER_LISTEN=127.0.0.1:8081`
 - `RELY_NAME="Quantum Relay"`
 - `RELY_DESCRIPTION="Nostr relay with quantum walk propagation"`
 - `GO_BIN=/usr/local/go/bin/go` if Go is not on `PATH`

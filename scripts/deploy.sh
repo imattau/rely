@@ -49,6 +49,9 @@ if [[ -n ${RELY_DESCRIPTION+x} ]]; then
 fi
 RELAY_DESCRIPTION="${RELY_DESCRIPTION:-$DEFAULT_RELAY_DESCRIPTION}"
 LISTEN_OVERRIDE="${RELY_LISTEN:-}"
+PEER_LISTEN_OVERRIDE="${RELY_PEER_LISTEN:-}"
+RELAY_LISTEN_RESOLVED=""
+PEER_LISTEN_RESOLVED=""
 NON_INTERACTIVE=false
 DRY_RUN="${RELY_DRY_RUN:-false}"
 GO_BIN="${GO_BIN:-}"
@@ -165,6 +168,7 @@ Environment overrides:
   RELY_PROXY=auto|caddy|nginx|none
   RELY_DOMAIN=example.com
   RELY_LISTEN=127.0.0.1:8080
+  RELY_PEER_LISTEN=127.0.0.1:8081
   RELY_NAME="Quantum Relay"
   RELY_DESCRIPTION="Nostr relay with quantum walk propagation"
   RELY_DRY_RUN=true
@@ -333,8 +337,30 @@ listen_port_in_use() {
 	ss -H -ltn "sport = :${port}" | grep -q .
 }
 
+normalize_listen_identity() {
+	local listen="$1"
+	local host port
+	host="${listen%:*}"
+	port="${listen##*:}"
+	if [[ -z "$host" || "$host" == "$listen" ]]; then
+		host="127.0.0.1"
+	fi
+	if [[ -z "$port" || "$port" == "$listen" ]]; then
+		port="8080"
+	fi
+	printf '%s:%s' "$host" "$port"
+}
+
+listen_matches() {
+	local left right
+	left="$(normalize_listen_identity "$1")"
+	right="$(normalize_listen_identity "$2")"
+	[[ "$left" == "$right" ]]
+}
+
 pick_free_listen() {
 	local desired="$1"
+	local avoid="${2:-}"
 	local host port candidate
 
 	host="${desired%:*}"
@@ -353,7 +379,7 @@ pick_free_listen() {
 		return 0
 	fi
 
-	while listen_port_in_use "$candidate"; do
+	while listen_port_in_use "$candidate" || { [[ -n "$avoid" ]] && listen_matches "$candidate" "$avoid"; }; do
 		port=$((port + 1))
 		if (( port > 65535 )); then
 			die "no free listen ports available starting at ${desired}"
@@ -417,6 +443,61 @@ update_config_listen() {
 		}
 		END {
 			if (in_relay && !replaced) {
+				printf "  listen: \"%s\"\n", new_listen
+			}
+		}
+	' "$CONFIG_FILE" >"$tmp"
+	run_root install -m 0644 "$tmp" "$CONFIG_FILE"
+	rm -f "$tmp"
+}
+
+update_config_peer_listen() {
+	local listen="$1"
+	local current
+	if [[ ! -f "$CONFIG_FILE" ]]; then
+		return 0
+	fi
+	current="$(parse_peer_listen_from_config)"
+	if [[ -z "$current" || "$current" == "$listen" ]]; then
+		return 0
+	fi
+
+	log "updating peer listen in existing config from ${current} to ${listen}"
+	local tmp backup_dir backup_file
+	tmp="$(mktemp)"
+	backup_dir="$(mktemp -d)"
+	TEMP_DIRS+=("$backup_dir")
+	backup_file="${backup_dir}/$(basename "$CONFIG_FILE").bak"
+	run_root cp -a "$CONFIG_FILE" "$backup_file"
+	BACKUPS["$CONFIG_FILE"]="$backup_file"
+
+	awk -v new_listen="$listen" '
+		BEGIN {
+			in_peer = 0
+			replaced = 0
+		}
+		/^[[:space:]]*peer:[[:space:]]*$/ {
+			print
+			in_peer = 1
+			next
+		}
+		in_peer && /^[[:space:]]*listen:[[:space:]]*/ && !replaced {
+			printf "  listen: \"%s\"\n", new_listen
+			replaced = 1
+			next
+		}
+		in_peer && /^[^[:space:]]/ {
+			if (!replaced) {
+				printf "  listen: \"%s\"\n", new_listen
+				replaced = 1
+			}
+			in_peer = 0
+		}
+		{
+			print
+		}
+		END {
+			if (in_peer && !replaced) {
 				printf "  listen: \"%s\"\n", new_listen
 			}
 		}
@@ -628,6 +709,14 @@ choose_listen() {
 	printf '%s' "$DEFAULT_PROXY_LISTEN"
 }
 
+choose_peer_listen() {
+	if [[ -n "$PEER_LISTEN_OVERRIDE" ]]; then
+		printf '%s' "$PEER_LISTEN_OVERRIDE"
+		return
+	fi
+	printf '%s' "$DEFAULT_PEER_LISTEN"
+}
+
 choose_public_url() {
 	if [[ -z "$DOMAIN" ]]; then
 		printf '%s' ""
@@ -693,9 +782,11 @@ write_config() {
 	fi
 
 	local listen
-	listen="$(choose_listen)"
+	listen="${RELAY_LISTEN_RESOLVED:-$(choose_listen)}"
 	local public_url
 	public_url="$(choose_public_url)"
+	local peer_listen
+	peer_listen="${PEER_LISTEN_RESOLVED:-$(choose_peer_listen)}"
 	log "writing config to ${CONFIG_FILE}"
 	local tmp
 	tmp="$(mktemp)"
@@ -707,7 +798,7 @@ relay:
   description: "${RELAY_DESCRIPTION}"
 
 peer:
-  listen: "${DEFAULT_PEER_LISTEN}"
+  listen: "${peer_listen}"
   public_port: ${DEFAULT_PEER_PUBLIC_PORT}
 
 quantum:
@@ -1130,6 +1221,7 @@ restart_service() {
 	run_root systemctl daemon-reload
 	run_root systemctl stop "$SERVICE_NAME" 2>/dev/null || true
 	check_listen_port_free "$(parse_listen_from_config)"
+	check_listen_port_free "$(parse_peer_listen_from_config)"
 	run_root systemctl enable --now "$SERVICE_NAME"
 }
 
@@ -1145,12 +1237,14 @@ install_action() {
 	fi
 	ensure_sudo
 	run_root systemctl stop "$SERVICE_NAME" 2>/dev/null || true
-	LISTEN_OVERRIDE="$(pick_free_listen "$(choose_listen)")"
+	RELAY_LISTEN_RESOLVED="$(pick_free_listen "$(choose_listen)")"
+	PEER_LISTEN_RESOLVED="$(pick_free_listen "$(choose_peer_listen)" "$RELAY_LISTEN_RESOLVED")"
 	ensure_directories
 	if [[ -n "$DOMAIN" ]]; then
 		update_config_public_url "$(choose_public_url)"
 	fi
-	update_config_listen "$LISTEN_OVERRIDE"
+	update_config_listen "$RELAY_LISTEN_RESOLVED"
+	update_config_peer_listen "$PEER_LISTEN_RESOLVED"
 	if [[ "$RELAY_NAME_FLAG_SET" == false && "$RELAY_NAME_ENV_SET" == false ]]; then
 		prompt_required RELAY_NAME "Relay name" "$RELAY_NAME"
 	fi
@@ -1184,9 +1278,14 @@ update_action() {
 	fi
 	ensure_sudo
 	update_source
+	run_root systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+	RELAY_LISTEN_RESOLVED="$(pick_free_listen "$(parse_listen_from_config)")"
+	PEER_LISTEN_RESOLVED="$(pick_free_listen "$(parse_peer_listen_from_config)" "$RELAY_LISTEN_RESOLVED")"
 	if [[ -n "$DOMAIN" ]]; then
 		update_config_public_url "$(choose_public_url)"
 	fi
+	update_config_listen "$RELAY_LISTEN_RESOLVED"
+	update_config_peer_listen "$PEER_LISTEN_RESOLVED"
 	build_binary
 	if [[ ! -f "$CONFIG_FILE" ]]; then
 		warn "config file missing; run install to create ${CONFIG_FILE}"
