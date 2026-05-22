@@ -84,6 +84,12 @@ func (pm *PeerManager) Accept(url string, conn *websocket.Conn) {
 	pm.mu.Unlock()
 	log.Printf("p2p: accepted inbound peer=%s peers=%d", url, peerCount)
 
+	if hello := marshalEnvelope("hello", map[string]any{}); hello != nil {
+		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		_ = conn.WriteMessage(websocket.TextMessage, hello)
+		_ = conn.SetWriteDeadline(time.Time{})
+	}
+
 	go func() {
 		log.Printf("p2p: serving inbound peer=%s", url)
 		pm.serveSession(p, conn)

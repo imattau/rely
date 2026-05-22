@@ -570,7 +570,6 @@ func TestQuantumRelayLiveSourcePeerPropagation(t *testing.T) {
 	}
 
 	peerURL := peerCandidates[0]
-	assertPeerEndpointHandshake(t, peerURL)
 	peerConn, _, err := dialTestRelayWebsocket(peerURL)
 	if err != nil {
 		t.Fatalf("dial peer %s: %v", peerURL, err)
@@ -601,8 +600,21 @@ func TestQuantumRelayLiveSourcePeerPropagation(t *testing.T) {
 		}
 	}()
 
-	// Allow the websocket peer connection to settle before publishing.
-	time.Sleep(2 * time.Second)
+	// Wait for the peer server hello frame confirming we are connected to the
+	// peer endpoint (not the main relay) and that our session is registered.
+	waitForCondition(t, 10*time.Second, func() bool {
+		select {
+		case err := <-peerErr:
+			t.Fatalf("peer connection error waiting for hello: %v", err)
+			return false
+		case env := <-peerFrames:
+			return env.Type == "hello"
+		default:
+			return false
+		}
+	}, func() string {
+		return fmt.Sprintf("waiting for peer hello from %s (wrong endpoint or peer server not running?)", peerURL)
+	})
 
 	note := nostr.Event{
 		CreatedAt: nostr.Now(),
@@ -722,21 +734,8 @@ func TestPeerEndpointBroadcastsNoteAnnounce(t *testing.T) {
 		"round":  7,
 	})
 
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, msg, err := conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("read broadcast: %v", err)
-	}
-
-	var env struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(msg, &env); err != nil {
-		t.Fatalf("unmarshal envelope: %v", err)
-	}
-	if env.Type != "note_announce" {
-		t.Fatalf("unexpected envelope type %q", env.Type)
-	}
+	env := readPeerEnvelopeOfType(t, conn, "note_announce", 2*time.Second)
+	_ = env
 }
 
 func TestPeerEndpointTrustGating(t *testing.T) {
@@ -778,21 +777,8 @@ func TestPeerEndpointTrustGating(t *testing.T) {
 			"round":  11,
 		})
 
-		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		_, msg, err := conn.ReadMessage()
-		if err != nil {
-			t.Fatalf("read broadcast: %v", err)
-		}
-
-		var env struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal(msg, &env); err != nil {
-			t.Fatalf("unmarshal envelope: %v", err)
-		}
-		if env.Type != "note_announce" {
-			t.Fatalf("unexpected envelope type %q", env.Type)
-		}
+		env := readPeerEnvelopeOfType(t, conn, "note_announce", 2*time.Second)
+		_ = env
 	})
 
 	t.Run("rejects non-allowlisted inbound peers", func(t *testing.T) {
@@ -830,6 +816,162 @@ func TestPeerEndpointTrustGating(t *testing.T) {
 			t.Fatal("expected rejected inbound peer connection to close")
 		}
 	})
+}
+
+func TestLocalTwoRelayPeerPropagation(t *testing.T) {
+	storeA := storage.NewStore()
+	relayA := rely.NewRelay()
+	relayA.Reject.Connection.Clear()
+	relayA.Reject.Event.Clear()
+	relayA.On.Req = func(ctx context.Context, c rely.Client, id string, filters nostr.Filters) ([]nostr.Event, error) {
+		_ = ctx
+		_ = c
+		_ = id
+		return storeA.Query(filters), nil
+	}
+
+	storeB := storage.NewStore()
+	relayB := rely.NewRelay()
+	relayB.Reject.Connection.Clear()
+	relayB.Reject.Event.Clear()
+	relayB.On.Req = func(ctx context.Context, c rely.Client, id string, filters nostr.Filters) ([]nostr.Event, error) {
+		_ = ctx
+		_ = c
+		_ = id
+		return storeB.Query(filters), nil
+	}
+
+	relayALn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen relay A: %v", err)
+	}
+	defer relayALn.Close()
+
+	relayBLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen relay B: %v", err)
+	}
+	defer relayBLn.Close()
+
+	peerLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen peer endpoint: %v", err)
+	}
+	defer peerLn.Close()
+
+	relayACtx, relayACancel := context.WithCancel(context.Background())
+	defer relayACancel()
+	go relayA.Start(relayACtx)
+	go func() { _ = (&http.Server{Handler: relayA}).Serve(relayALn) }()
+
+	relayBCtx, relayBCancel := context.WithCancel(context.Background())
+	defer relayBCancel()
+	go relayB.Start(relayBCtx)
+	go func() { _ = (&http.Server{Handler: relayB}).Serve(relayBLn) }()
+
+	relayAURL := "ws://" + relayALn.Addr().String()
+	relayBURL := "ws://" + relayBLn.Addr().String()
+	peerURL := "ws://" + peerLn.Addr().String()
+
+	diffuserB := consensus.NewDiffuser(nil, nil)
+	graphB := quantum.NewGraphState()
+	graphB.SetRelays([]string{relayBURL})
+	graphB.Recompute()
+	fetcherB := newQuantumFetcher(relayBURL, storeB, diffuserB, TrustConfig{}, 32)
+	fetcherB.relay = relayB
+	propB := quantum.NewPropagator(graphB, graphB.GetRelayIndex(relayBURL), 0.05, fetcherB.Fetch)
+
+	announceSeen := make(chan struct{}, 1)
+	cfg := defaultConfig()
+	cfg.Trust.Enabled = false
+	var peerMgrB *p2p.PeerManager
+	peerMgrB = p2p.NewPeerManager(func(peerURL, msgType string, payload json.RawMessage) {
+		handlePeerMessage(cfg, peerMgrB, diffuserB, propB, peerURL, msgType, payload)
+		if msgType == "note_announce" {
+			select {
+			case announceSeen <- struct{}{}:
+			default:
+			}
+		}
+	})
+	peerServer := newPeerServer(cfg, peerMgrB)
+	peerSrv := &http.Server{Handler: peerServer}
+	go func() { _ = peerSrv.Serve(peerLn) }()
+	defer func() { _ = peerSrv.Close() }()
+
+	peerMgrA := p2p.NewPeerManager(nil)
+	if err := peerMgrA.Connect(peerURL); err != nil {
+		t.Fatalf("connect peer: %v", err)
+	}
+	defer peerMgrA.Disconnect(peerURL)
+
+	waitForCondition(t, 5*time.Second, func() bool {
+		return len(peerMgrB.Peers()) == 1
+	}, func() string {
+		return fmt.Sprintf("waiting for peer registration, peers=%v", peerMgrB.Peers())
+	})
+
+	note := nostr.Event{
+		CreatedAt: nostr.Now(),
+		Kind:      1,
+		PubKey:    "relay-a-pubkey",
+		Content:   "local two relay peer propagation smoke test",
+	}
+	if err := note.Sign(nostr.GeneratePrivateKey()); err != nil {
+		t.Fatalf("sign note: %v", err)
+	}
+
+	relayA.On.Event = func(c rely.Client, event *nostr.Event) rely.EventResult {
+		storeA.Save(*event)
+		peerMgrA.Broadcast("note_announce", map[string]any{
+			"id":     event.ID,
+			"source": relayAURL,
+			"pubkey": event.PubKey,
+			"round":  1,
+		})
+		return rely.Success()
+	}
+	relayA.On.Req = func(ctx context.Context, c rely.Client, id string, filters nostr.Filters) ([]nostr.Event, error) {
+		_ = ctx
+		_ = c
+		_ = id
+		return storeA.Query(filters), nil
+	}
+
+	publishToRelay(t, relayAURL, note)
+
+	waitForCondition(t, 5*time.Second, func() bool {
+		select {
+		case <-announceSeen:
+			return true
+		default:
+			return false
+		}
+	}, func() string {
+		return "waiting for local note_announce receipt"
+	})
+
+	propB.AddNote(note.ID, relayAURL, note.PubKey, 1)
+	propB.Tick(2, 0.05)
+
+	waitForCondition(t, 10*time.Second, func() bool {
+		_, ok := storeB.Get(note.ID)
+		return ok
+	}, func() string {
+		_, ok := storeB.Get(note.ID)
+		return fmt.Sprintf("relay B store has note=%v", ok)
+	})
+
+	fetched, err := requestEventFromRelay(t, relayBURL, note.ID)
+	if err != nil {
+		t.Fatalf("requestEventFromRelay relay B: %v", err)
+	}
+	if fetched.ID != note.ID {
+		t.Fatalf("fetched ID = %s, want %s", fetched.ID, note.ID)
+	}
+	if fetched.Content != note.Content {
+		t.Fatalf("fetched content = %q, want %q", fetched.Content, note.Content)
+	}
 }
 
 func publishToRelay(t *testing.T, url string, event nostr.Event) {
@@ -970,6 +1112,27 @@ func tryPublishToRelay(url string, event nostr.Event) error {
 		return fmt.Errorf("%s", reason)
 	}
 	return nil
+}
+
+func readPeerEnvelopeOfType(t *testing.T, conn *websocket.Conn, msgType string, timeout time.Duration) p2p.Envelope {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conn.SetReadDeadline(deadline)
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read peer envelope: %v", err)
+		}
+		var env p2p.Envelope
+		if err := json.Unmarshal(msg, &env); err != nil {
+			continue
+		}
+		if env.Type == msgType {
+			return env
+		}
+	}
+	t.Fatalf("timeout waiting for peer envelope type %q", msgType)
+	return p2p.Envelope{}
 }
 
 func dialTestRelayWebsocket(url string) (*websocket.Conn, *http.Response, error) {
