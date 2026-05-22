@@ -266,11 +266,18 @@ prompt() {
 	local question="$2"
 	local default="$3"
 	local answer=""
+	local input_fd=""
 
 	if [[ "$NON_INTERACTIVE" == true || ! -t 0 ]]; then
 		answer="$default"
 	else
-		read -r -p "${question} [${default}]: " answer
+		if [[ -r /dev/tty && -w /dev/tty ]]; then
+			input_fd="/dev/tty"
+			printf '%s [%s]: ' "$question" "$default" >/dev/tty
+			read -r answer <"$input_fd"
+		else
+			read -r -p "${question} [${default}]: " answer
+		fi
 		answer="${answer:-$default}"
 	fi
 
