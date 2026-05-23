@@ -545,23 +545,26 @@ probe_websocket_proxy() {
 	local domain="$1"
 	local port="$2"
 	local scheme="$3"
-	local response
 	local key="dGhlIHNhbXBsZSBub25jZQ=="
 
 	if ! command -v openssl >/dev/null 2>&1; then
 		warn "openssl not found; skipping ${scheme} websocket smoke test for ${domain}"
 		return 0
 	fi
-
-	response="$(
-		printf 'GET / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n' "$domain" "$key" |
-			openssl s_client -connect "${domain}:${port}" -servername "$domain" -quiet 2>/dev/null |
-			head -n 20
-	)"
-
-	if ! grep -q "101 Switching Protocols" <<<"$response"; then
-		die "${scheme} websocket probe failed for ${domain}:${port}"
+	if ! command -v timeout >/dev/null 2>&1; then
+		warn "timeout not found; skipping ${scheme} websocket smoke test for ${domain}"
+		return 0
 	fi
+
+	log "probing ${scheme} websocket proxy for ${domain}:${port}"
+	if ! printf 'GET / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n' "$domain" "$key" |
+		timeout 10s openssl s_client -connect "${domain}:${port}" -servername "$domain" -quiet 2>/dev/null |
+		tr -d '\000' |
+		grep -q "101 Switching Protocols"; then
+		die "${scheme} websocket probe failed or timed out for ${domain}:${port}"
+	fi
+
+	log "${scheme} websocket proxy probe passed for ${domain}:${port}"
 }
 
 require_root_tools() {
