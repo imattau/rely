@@ -1,6 +1,8 @@
-# Quantum-Inspired Nostr Relay
+# quantum-relay
 
-A production-ready Nostr relay built on [rely v2](../../README.md) that uses **continuous-time quantum walk propagation** to decide which notes to proactively fetch from peer relays, combined with a **gossip-based reputation and consensus layer** to suppress spam at the network level.
+A production-ready Nostr relay implementation built on [rely v2](../../README.md) that uses **continuous-time quantum walk propagation** to decide which notes to proactively fetch from peer relays, combined with a **gossip-based reputation and consensus layer** to suppress spam at the network level.
+
+This is the concrete `quantum-relay` application that ships in this repository.
 
 ---
 
@@ -238,7 +240,7 @@ By default the binary reads `configs/config.yaml` relative to its working direct
 
 ---
 
-## Running
+## Running `quantum-relay`
 
 ```bash
 go build ./cmd/quantum-relay

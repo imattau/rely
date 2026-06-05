@@ -1,6 +1,8 @@
 # rely
 A framework for building super custom [Nostr](https://github.com/nostr-protocol/nostr) relays you can *rely* on. Written in Go, it's designed to be simple and performant, while providing an exeptional developer experience.
 
+This repository also includes [`cmd/quantum-relay`](./cmd/quantum-relay), a production relay implementation built on top of `rely` and extended with storage, peer mesh, and quantum propagation.
+
 <a href="https://pkg.go.dev/github.com/pippellia-btc/rely"><img src="https://pkg.go.dev/badge/github.com/pippellia-btc/rely.svg" alt="Go Reference"></a>
 [![Go Report Card](https://goreportcard.com/badge/github.com/pippellia-btc/rely)](https://goreportcard.com/report/github.com/pippellia-btc/rely)
 
@@ -8,6 +10,36 @@ A framework for building super custom [Nostr](https://github.com/nostr-protocol/
 ```
 go get github.com/pippellia-btc/rely
 ```
+
+## Reference Implementation
+
+The [`cmd/quantum-relay`](./cmd/quantum-relay) binary is the concrete relay implementation in this repository. It combines:
+
+- `rely` for the websocket relay core
+- in-memory or SQLite event storage
+- peer-to-peer note announcement and fetch propagation
+- reputation-driven spam suppression and NIP-42 auth
+
+See [cmd/quantum-relay/README.md](./cmd/quantum-relay/README.md) for the implementation-specific documentation.
+
+## Quantum Relay Overview
+
+The quantum relay is a relay-first Nostr implementation that uses a peer mesh to move notes between relays without requiring a central store.
+
+How it works:
+
+1. A client publishes an event to the local relay.
+2. `On.Event` stores the event, applies local policy, and emits a `note_announce` to peers.
+3. Each peer evaluates whether the note should be fetched using quantum-walk propagation and local reputation state.
+4. If a peer fetches the note, it stores the event locally and broadcasts it to its own subscribers.
+
+The effect is a demand-driven relay mesh:
+
+- notes only move further when a relay believes there is value in fetching them
+- reputation travels ahead of content and suppresses spam propagation
+- the relay still behaves like a normal Nostr relay for clients and subscriptions
+
+For the full architecture, configuration, and runtime details, see [cmd/quantum-relay/README.md](./cmd/quantum-relay/README.md).
 
 ## Simple and Customizable
 Getting started is easy, and deep customization is just as straightforward.
