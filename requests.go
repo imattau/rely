@@ -17,6 +17,9 @@ var (
 	ErrInvalidEvent    = errors.New(`an EVENT request must follow this format: ['EVENT', {event_JSON}]`)
 	ErrInvalidEventID  = errors.New(`invalid event ID`)
 	ErrInvalidEventSig = errors.New(`invalid event signature`)
+	ErrExpiredEvent    = errors.New(`blocked: the event has expired`)
+	ErrCreatedAtLimits = errors.New(`blocked: created_at timestamp is too far off`)
+	ErrDifficultyTooLow = errors.New(`blocked: event ID difficulty is too low`)
 
 	ErrInvalidReq       = errors.New(`a REQ request must follow this format: ['REQ', {id}, {filter1}, {filter2}, ...]`)
 	ErrInvalidCount     = errors.New(`a COUNT request must follow this format: ['COUNT', {id}, {filter1}, {filter2}, ...]`)

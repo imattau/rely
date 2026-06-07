@@ -117,6 +117,9 @@ func (d *dispatcher) Broadcast(e *nostr.Event) error {
 	for _, id := range candidates {
 		sub := d.subscriptions[id]
 		if sub.Matches(e) {
+			if !CanAccessEvent(sub.client, e) {
+				continue
+			}
 			response.ID = sub.id
 			sub.client.send(response)
 		}

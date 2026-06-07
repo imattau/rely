@@ -78,6 +78,9 @@ func (p *processor) Process(r request) {
 		}
 
 		for i := range events {
+			if !CanAccessEvent(r.client, &events[i]) {
+				continue
+			}
 			r.client.send(eventResponse{ID: r.id, Event: &events[i]})
 		}
 		r.client.send(eoseResponse{ID: r.id})

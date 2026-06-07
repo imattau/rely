@@ -197,7 +197,7 @@ func newSystemSettings() systemSettings {
 func newRelayInfo() []byte {
 	info := nip11.RelayInformationDocument{
 		Software:      "https://github.com/pippellia-btc/rely",
-		SupportedNIPs: []any{1, 11, 42},
+		SupportedNIPs: []any{1, 9, 11, 13, 15, 20, 22, 42, 70},
 	}
 
 	json, err := json.Marshal(info)
@@ -254,6 +254,27 @@ func (r *Relay) validate() {
 	}
 	if r.settings.Sys.info == nil {
 		r.log.Warn("NIP-11 information document is nil")
+	} else if r.On.Count != nil {
+		var info nip11.RelayInformationDocument
+		if err := json.Unmarshal(r.settings.Sys.info, &info); err == nil {
+			found := false
+			for _, nip := range info.SupportedNIPs {
+				if n, ok := nip.(float64); ok && int(n) == 45 {
+					found = true
+					break
+				}
+				if n, ok := nip.(int); ok && n == 45 {
+					found = true
+					break
+				}
+			}
+			if !found {
+				info.SupportedNIPs = append(info.SupportedNIPs, 45)
+				if newBytes, err := json.Marshal(info); err == nil {
+					r.settings.Sys.info = newBytes
+				}
+			}
+		}
 	}
 
 	// auth (log since NIP-42 is not required)

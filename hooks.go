@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/nbd-wtf/go-nostr"
@@ -64,7 +65,7 @@ type RejectHooks struct {
 func DefaultRejectHooks() RejectHooks {
 	return RejectHooks{
 		Connection: []func(Stats, *http.Request) error{RegistrationFailWithin(3 * time.Second)},
-		Event:      []func(Client, *nostr.Event) error{InvalidID, InvalidSignature},
+		Event:      []func(Client, *nostr.Event) error{InvalidID, InvalidSignature, ExpiredEvent},
 	}
 }
 
@@ -215,6 +216,23 @@ func InvalidSignature(c Client, e *nostr.Event) error {
 	return nil
 }
 
+// ExpiredEvent returns an error if the event's "expiration" tag is a UNIX timestamp in the past.
+func ExpiredEvent(c Client, e *nostr.Event) error {
+	for _, tag := range e.Tags {
+		if len(tag) >= 2 && tag[0] == "expiration" {
+			expirationTime, err := strconv.ParseInt(tag[1], 10, 64)
+			if err != nil {
+				// Ignore invalid expiration tags to remain lenient, but reject malformed attempts if desired
+				continue
+			}
+			if time.Now().Unix() > expirationTime {
+				return ErrExpiredEvent
+			}
+		}
+	}
+	return nil
+}
+
 // RegistrationFailWithin returns a Reject.Connection function that errs
 // if a client registration has failed within the given duration.
 func RegistrationFailWithin(d time.Duration) func(Stats, *http.Request) error {
@@ -234,6 +252,66 @@ func DisconnectOnDrops(maxDropped int) func(c Client) {
 			c.Disconnect()
 		}
 	}
+}
+
+// RejectCreatedAtLimits returns a Reject.Event function that rejects events
+// whose created_at timestamp is too far in the past or in the future.
+func RejectCreatedAtLimits(maxPast, maxFuture time.Duration) func(Client, *nostr.Event) error {
+	return func(c Client, e *nostr.Event) error {
+		eventTime := time.Unix(int64(e.CreatedAt), 0)
+		now := time.Now()
+		if now.Sub(eventTime) > maxPast || eventTime.Sub(now) > maxFuture {
+			return ErrCreatedAtLimits
+		}
+		return nil
+	}
+}
+
+// RejectMinDifficulty returns a Reject.Event function that rejects events
+// whose ID does not meet the minimum Proof of Work difficulty (number of leading zero bits).
+func RejectMinDifficulty(difficulty int) func(Client, *nostr.Event) error {
+	return func(c Client, e *nostr.Event) error {
+		if CountLeadingZeroBits(e.ID) < difficulty {
+			return ErrDifficultyTooLow
+		}
+		return nil
+	}
+}
+
+// CountLeadingZeroBits counts the leading zero bits of a 64-char hex string (SHA256).
+func CountLeadingZeroBits(hexStr string) int {
+	if len(hexStr) != 64 {
+		return 0
+	}
+	zeros := 0
+	for i := 0; i < len(hexStr); i++ {
+		char := hexStr[i]
+		if char == '0' {
+			zeros += 4
+			continue
+		}
+		var val int
+		if char >= '1' && char <= '9' {
+			val = int(char - '0')
+		} else if char >= 'a' && char <= 'f' {
+			val = int(char - 'a' + 10)
+		} else if char >= 'A' && char <= 'F' {
+			val = int(char - 'A' + 10)
+		} else {
+			break
+		}
+		if val >= 8 {
+			// binary 1xxx
+		} else if val >= 4 {
+			zeros += 1
+		} else if val >= 2 {
+			zeros += 2
+		} else if val >= 1 {
+			zeros += 3
+		}
+		break
+	}
+	return zeros
 }
 
 // Slice is an internal type used to simplify registration of hooks.
