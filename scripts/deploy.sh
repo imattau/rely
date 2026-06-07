@@ -558,7 +558,7 @@ probe_websocket_proxy() {
 
 	log "probing ${scheme} websocket proxy for ${domain}:${port}"
 	if ! printf 'GET / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n' "$domain" "$key" |
-		timeout 10s openssl s_client -connect "${domain}:${port}" -servername "$domain" -quiet 2>/dev/null |
+		timeout 10s openssl s_client -connect "127.0.0.1:${port}" -servername "$domain" -quiet 2>/dev/null |
 		tr -d '\000' |
 		grep -q "101 Switching Protocols"; then
 		die "${scheme} websocket probe failed or timed out for ${domain}:${port}"
