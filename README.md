@@ -1,4 +1,4 @@
-# rely
+# Quantum Rely
 A framework for building super custom [Nostr](https://github.com/nostr-protocol/nostr) relays you can *rely* on. Written in Go, it's designed to be simple and performant, while providing an exeptional developer experience.
 
 This repository also includes [`cmd/quantum-relay`](./cmd/quantum-relay), a production relay implementation built on top of `rely` and extended with storage, peer mesh, and quantum propagation.
