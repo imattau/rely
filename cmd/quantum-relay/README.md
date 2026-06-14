@@ -1,6 +1,6 @@
 # quantum-relay
 
-A production-ready Nostr relay implementation built on [rely v2](../../README.md) that uses **continuous-time quantum walk propagation** to decide which notes to proactively fetch from peer relays, combined with a **gossip-based reputation and consensus layer** to suppress spam at the network level.
+A Nostr relay implementation built on [rely v2](../../README.md) that uses **continuous-time quantum walk propagation** to decide which notes to proactively fetch from peer relays, combined with a **gossip-based reputation and consensus layer** to suppress spam at the network level.
 
 This is the concrete `quantum-relay` application that ships in this repository.
 
